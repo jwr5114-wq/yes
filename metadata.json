@@ -1,0 +1,6 @@
+{
+  "name": "교수·학습 및 평가 운영 계획서 스마트 작성기",
+  "description": "2026학년도 2학기 고등학교 교수·학습 및 평가 운영 계획서 스마트 작성기 (교육과정 HWP 연동, 루브릭 AI 설계, A4 실시간 미리보기 및 PDF 다운로드)",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

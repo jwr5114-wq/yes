@@ -1,0 +1,82 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    font-family: 'Noto Sans KR', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+}
+
+/* A4 paper preview simulation */
+.a4-page {
+  width: 100%;
+  max-width: 100%;
+  padding: 24px 20px;
+  margin: 0 auto;
+  background: white;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+  font-size: 8.5pt;
+  line-height: 1.45;
+  color: #1e293b;
+  box-sizing: border-box;
+  position: relative;
+  border-radius: 8px;
+  overflow-x: hidden;
+}
+
+/* Document Table borders & auto word wrap */
+.doc-table {
+  width: 100%;
+  max-width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  margin-bottom: 12px;
+  font-size: 8pt;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+.doc-table th, .doc-table td {
+  border: 1px solid #334155;
+  padding: 5px 4px;
+  text-align: center;
+  vertical-align: middle;
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+
+.doc-table th {
+  background-color: #f8fafc;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.doc-table td.left {
+  text-align: left;
+}
+
+/* Page break prevention for PDF export */
+.pv-section {
+  page-break-inside: avoid;
+  break-inside: avoid;
+}
+
+.doc-table tr {
+  page-break-inside: avoid;
+  break-inside: avoid;
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
