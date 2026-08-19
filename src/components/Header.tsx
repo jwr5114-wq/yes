@@ -1,5 +1,5 @@
 import React from "react";
-import { Folder, Save, History, Sparkles, FileDown, CheckCircle2, Loader2, Edit3 } from "lucide-react";
+import { Folder, Save, History, Sparkles, FileDown, FileCode, CheckCircle2, Loader2, Edit3, FileText } from "lucide-react";
 
 interface HeaderProps {
   currentProjectName: string;
@@ -9,6 +9,8 @@ interface HeaderProps {
   onManualSave: () => void;
   onLoadSample: () => void;
   onDownloadPdf: () => void;
+  onOpenJsonExport: () => void;
+  onGoToHwpStep?: () => void;
   isDownloadingPdf: boolean;
 }
 
@@ -20,6 +22,8 @@ export const Header: React.FC<HeaderProps> = ({
   onManualSave,
   onLoadSample,
   onDownloadPdf,
+  onOpenJsonExport,
+  onGoToHwpStep,
   isDownloadingPdf,
 }) => {
   return (
@@ -87,16 +91,25 @@ export const Header: React.FC<HeaderProps> = ({
 
         <button
           onClick={onLoadSample}
-          className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded-lg transition-all flex items-center gap-1.5 shadow-sm"
+          className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-medium rounded-lg transition-all flex items-center gap-1.5 shadow-sm"
         >
-          <Sparkles className="w-3.5 h-3.5 text-emerald-100" /> 2026 화학 예시
+          <Sparkles className="w-3.5 h-3.5 text-emerald-200" /> 2026 화학 예시
+        </button>
+
+        <button
+          type="button"
+          onClick={onOpenJsonExport}
+          className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 shadow-sm cursor-pointer border border-indigo-400/40"
+        >
+          <FileCode className="w-3.5 h-3.5 text-indigo-200" /> HWP 연동 데이터 (JSON)
         </button>
 
         <button
           type="button"
           onClick={onDownloadPdf}
           disabled={isDownloadingPdf}
-          className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 text-white text-xs font-semibold rounded-lg transition-all flex items-center gap-1.5 shadow-sm cursor-pointer"
+          className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:bg-slate-800 text-slate-200 text-xs font-medium rounded-lg transition-all flex items-center gap-1.5 border border-slate-700 shadow-sm cursor-pointer"
+          title="참고용 PDF 미리보기 다운로드"
         >
           {isDownloadingPdf ? (
             <>
@@ -104,7 +117,7 @@ export const Header: React.FC<HeaderProps> = ({
             </>
           ) : (
             <>
-              <FileDown className="w-3.5 h-3.5" /> PDF 다운로드
+              <FileDown className="w-3.5 h-3.5 text-slate-400" /> PDF 참고용
             </>
           )}
         </button>
@@ -112,3 +125,4 @@ export const Header: React.FC<HeaderProps> = ({
     </header>
   );
 };
+

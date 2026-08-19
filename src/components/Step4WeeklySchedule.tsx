@@ -1,14 +1,615 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { PlanData, ScheduleItem } from "../types";
 import {
   CALENDAR_BLOCKED_DATES,
   KOREAN_WEEKDAYS,
   WEEKDAY_SUBSTITUTIONS,
 } from "../constants";
-import { getExpandedStdText, sortAchievementStandardCodes } from "../utils/hwpParser";
-import { getOverlappingPerformancesForWeek, formatDateRangeDisplay } from "../utils/dateUtils";
+import {
+  getExpandedStdText,
+  expandRangeCodes,
+  formatStdCodesForDisplay,
+  sortAchievementStandardCodes,
+  getUnitTitlesForStandards,
+} from "../utils/hwpParser";
+import { getOverlappingPerformancesForWeek, getOverlappingRegularExamForWeek, formatDateRangeDisplay, checkPerformanceWeekOverlap } from "../utils/dateUtils";
 import { generateWithGemini } from "../utils/geminiApi";
-import { Sparkles, Plus, Trash2, BookOpen, Loader2, Lightbulb, Calendar, CheckCircle2 } from "lucide-react";
+import { Sparkles, Plus, Trash2, BookOpen, Loader2, Calendar, CheckCircle2, RotateCw, AlertTriangle } from "lucide-react";
+
+// Helper to extract bracketed sections
+function parseSections(text: string) {
+  const regex = /\[(핵심\s*아이디어|핵심개념|핵심질문|수행평가\s*내용|수행평가|수행지시어)\]([\s\S]*?)(?=\[(?:핵심\s*아이디어|핵심개념|핵심질문|수행평가\s*내용|수행평가|수행지시어)\]|$)/g;
+  const sections: Record<string, string> = {};
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    const normKey = match[1].replace(/\s+/g, "");
+    sections[normKey] = match[2].trim();
+  }
+  return sections;
+}
+
+// Helper to extract core idea from existing topic string
+export function extractCoreIdea(topic: string): string {
+  if (!topic) return "";
+  const ideaSplitRegex = /\[핵심\s*아이디어\]/i;
+  if (ideaSplitRegex.test(topic)) {
+    return topic.split(ideaSplitRegex)[1].trim();
+  }
+  return "";
+}
+
+// Function to safely inject or update [핵심 아이디어] in topic column while preserving base unit name
+export function updateTopicWithIdea(existingTopic: string, newIdea: string): string {
+  const cleanIdea = newIdea.trim();
+  if (!cleanIdea) return existingTopic;
+
+  const ideaSplitRegex = /\[핵심\s*아이디어\]/i;
+  let baseTopic = "";
+  if (ideaSplitRegex.test(existingTopic)) {
+    baseTopic = existingTopic.split(ideaSplitRegex)[0].trim();
+  } else {
+    baseTopic = existingTopic.trim();
+  }
+
+  if (baseTopic && baseTopic !== "-") {
+    return `${baseTopic}\n\n[핵심 아이디어]\n${cleanIdea}`;
+  }
+  return `[핵심 아이디어]\n${cleanIdea}`;
+}
+
+// Function to migrate any misplaced [핵심 아이디어] from detail into topic
+export function migrateScheduleItem(item: ScheduleItem): { item: ScheduleItem; changed: boolean } {
+  const detail = item.detail || "";
+  const ideaRegex = /\[핵심\s*아이디어\]([\s\S]*?)(?=\[(?:핵심\s*아이디어|핵심개념|핵심질문|수행평가\s*내용|수행평가|수행지시어)\]|$)/i;
+  const match = detail.match(ideaRegex);
+
+  if (!match) {
+    return { item, changed: false };
+  }
+
+  const ideaContent = match[1].trim();
+  const cleanDetail = detail
+    .replace(ideaRegex, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  let newTopic = item.topic || "";
+  if (ideaContent) {
+    newTopic = updateTopicWithIdea(newTopic, ideaContent);
+  }
+
+  return {
+    item: {
+      ...item,
+      topic: newTopic,
+      detail: cleanDetail,
+    },
+    changed: true,
+  };
+}
+
+// Helper to build default or updated performance detail text for a week with [수행평가 내용] and [수행지시어]
+export function buildDefaultPerfWeekDetail(
+  matchedPerfs: ReturnType<typeof getOverlappingPerformancesForWeek>,
+  data: PlanData
+): string {
+  if (!matchedPerfs || matchedPerfs.length === 0) return "";
+
+  const perf = matchedPerfs[0];
+  const perfName = perf.name || "";
+  const flow = perf.flow || "";
+  const method = perf.method || "";
+
+  let summary = "";
+  if (flow && flow.trim() && flow !== "-") {
+    const cleanedSteps = flow
+      .split(/(?:\d+\)|단계\s*\d*[:\.]?|\n|-)/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 2);
+
+    if (cleanedSteps.length > 0) {
+      summary = `${cleanedSteps.slice(0, 3).join(", ")} 과정을 거쳐 탐구 과제를 수행하고 결과를 분석하여 보고서로 작성한다.`;
+    }
+  }
+
+  if (!summary) {
+    if (perfName.includes("분자") || perfName.includes("입체 구조")) {
+      summary = "분자의 입체 구조를 모델링하고 결합의 극성과 물질의 성질 간 관계를 분석하여 보고서로 작성한다.";
+    } else if (perfName.includes("중화") || perfName.includes("농도") || perfName.includes("적정")) {
+      summary = "중화 반응의 양적 관계와 적정 원리를 바탕으로 표준용액을 활용한 실험을 수행하고 미지 농도를 산출하여 보고서로 작성한다.";
+    } else {
+      summary = `${perfName || "수행평가"} 과제를 단계별로 수행하여 관련 개념을 적용하고 탐구 결과를 분석하여 정리한다.`;
+    }
+  }
+
+  // Action verbs based on method & performance
+  let selectedVerbs = ["모델링하다", "분석하다", "추론하다", "설명하다"];
+  if (method.includes("실험") || method.includes("탐구") || perfName.includes("실험") || perfName.includes("적정")) {
+    selectedVerbs = ["설계하다", "측정하다", "계산하다", "분석하다", "도출하다", "설명하다"];
+  } else if (method.includes("서술") || method.includes("논술") || perfName.includes("보고서")) {
+    selectedVerbs = ["모델링하다", "분석하다", "추론하다", "설명하다"];
+  }
+
+  const parts: string[] = [];
+  parts.push(`[수행평가 내용]\n${summary}`);
+  parts.push(`[수행지시어]\n${selectedVerbs.join(", ")}`);
+
+  return parts.join("\n\n");
+}
+
+// Helper to build default formative assessment detail for pre-performance week
+export function buildDefaultFormativeWeekDetail(
+  upcomingPerf: MatchedPerfItem | undefined,
+  data: PlanData,
+  isEven = false
+): string {
+  const perfName = upcomingPerf?.name || `수행평가 ${upcomingPerf?.perfIndex || ""}`.trim();
+  const parts: string[] = [];
+
+  parts.push(`[핵심질문]\n다음 주 실시될 [${perfName}]의 성공적 수행과 성취기준 도달을 위해 학습한 핵심 개념과 원리를 어떻게 종합하고 점검할 것인가?`);
+  if (isEven) {
+    parts.push(`[핵심개념]\n관련 단원 주요 개념 원리 및 형성평가 점검 요소`);
+  }
+  parts.push(`[수행지시어]\n비교하다, 유추하다, 적용하다, 확인하다`);
+
+  return parts.join("\n\n");
+}
+
+export interface MatchedPerfItem {
+  perfIndex: number;
+  name: string;
+  startDate: string;
+  endDate: string;
+  period: string;
+  std: string;
+  flow: string;
+  ai: string;
+  method: string;
+  rubricCriteria: any[];
+}
+
+// Helper to identify performance weeks and their preceding formative assessment weeks
+export function getScheduleAssessmentContext(
+  schedules: ScheduleItem[],
+  data: PlanData
+): {
+  formativeWeekIndices: Set<number>;
+  formativeNextPerfMap: Map<number, MatchedPerfItem>;
+  perfWeekIndicesMap: Map<number, number>;
+} {
+  const perfWeekIndicesMap = new Map<number, number>();
+  const formativeWeekIndices = new Set<number>();
+  const formativeNextPerfMap = new Map<number, MatchedPerfItem>();
+
+  const maxPerf = data.perfCount || 0;
+  for (let pIdx = 1; pIdx <= maxPerf; pIdx++) {
+    const startDate = String(data[`perf${pIdx}StartDate` as keyof PlanData] || "");
+    const endDate = String(data[`perf${pIdx}EndDate` as keyof PlanData] || "");
+    if (!startDate && !endDate) continue;
+
+    const name = String(data[`perf${pIdx}Name` as keyof PlanData] || `수행평가 ${pIdx}`);
+    const period = String(data[`perf${pIdx}Period` as keyof PlanData] || "");
+    const std = String(data[`perf${pIdx}Std` as keyof PlanData] || "");
+    const flow = String(data[`perf${pIdx}Flow` as keyof PlanData] || "");
+    const ai = String(data[`perf${pIdx}Ai` as keyof PlanData] || "");
+    const method = String(data[`perf${pIdx}Method` as keyof PlanData] || "");
+    const rubricCriteria = (data[`perf${pIdx}RubricCriteria` as keyof PlanData] as any[]) || [];
+
+    const perfItem: MatchedPerfItem = {
+      perfIndex: pIdx,
+      name,
+      startDate,
+      endDate,
+      period,
+      std,
+      flow,
+      ai,
+      method,
+      rubricCriteria,
+    };
+
+    for (let wIdx = 0; wIdx < schedules.length; wIdx++) {
+      if (checkPerformanceWeekOverlap(schedules[wIdx].weekDate, startDate, endDate)) {
+        if (!perfWeekIndicesMap.has(pIdx)) {
+          perfWeekIndicesMap.set(pIdx, wIdx);
+          if (wIdx > 0) {
+            formativeWeekIndices.add(wIdx - 1);
+            formativeNextPerfMap.set(wIdx - 1, perfItem);
+          }
+        }
+      }
+    }
+  }
+
+  return { formativeWeekIndices, formativeNextPerfMap, perfWeekIndicesMap };
+}
+
+// Helper to determine the week indices for regular exams
+export function getExamWeekIndices(
+  schedules: ScheduleItem[],
+  data: PlanData
+): {
+  midExamWeekIndex: number | null;
+  finalExamWeekIndex: number | null;
+} {
+  let midExamWeekIndex: number | null = null;
+  let finalExamWeekIndex: number | null = null;
+
+  for (let idx = 0; idx < schedules.length; idx++) {
+    const item = schedules[idx];
+    if (item.weekDate) {
+      const exam = getOverlappingRegularExamForWeek(item.weekDate, data);
+      if (exam) {
+        if (exam.type === "mid" && midExamWeekIndex === null) {
+          midExamWeekIndex = idx;
+        } else if (exam.type === "final" && finalExamWeekIndex === null) {
+          finalExamWeekIndex = idx;
+        }
+      }
+    }
+  }
+
+  // If midterm exam week wasn't found by exact overlap, search by midStartDate
+  if (midExamWeekIndex === null && data.midStartDate) {
+    for (let idx = 0; idx < schedules.length; idx++) {
+      const parts = (schedules[idx].weekDate || "").split("~");
+      if (parts[0] && parts[0].includes(".")) {
+        const match = parts[0].match(/(\d+)\.(\d+)/);
+        if (match) {
+          const m = parseInt(match[1], 10);
+          const d = parseInt(match[2], 10);
+          const [midY, midM, midD] = data.midStartDate.split("-").map(Number);
+          if (m === midM && Math.abs(d - midD) <= 6) {
+            midExamWeekIndex = idx;
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  // If final exam week wasn't found by exact overlap, search by finalStartDate
+  if (finalExamWeekIndex === null && data.finalStartDate) {
+    for (let idx = 0; idx < schedules.length; idx++) {
+      const parts = (schedules[idx].weekDate || "").split("~");
+      if (parts[0] && parts[0].includes(".")) {
+        const match = parts[0].match(/(\d+)\.(\d+)/);
+        if (match) {
+          const m = parseInt(match[1], 10);
+          const d = parseInt(match[2], 10);
+          const [finY, finM, finD] = data.finalStartDate.split("-").map(Number);
+          if (m === finM && Math.abs(d - finD) <= 6) {
+            finalExamWeekIndex = idx;
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  // Fallback: if midterm exam week still not determined, default to 7th week (idx: 6)
+  if (midExamWeekIndex === null) {
+    midExamWeekIndex = Math.min(6, Math.max(0, Math.floor(schedules.length / 2) - 1));
+  }
+
+  // Fallback: if final exam week still not determined, default to second-to-last week
+  if (finalExamWeekIndex === null) {
+    finalExamWeekIndex = Math.max((midExamWeekIndex ?? 6) + 1, schedules.length - 2);
+  }
+
+  return { midExamWeekIndex, finalExamWeekIndex };
+}
+
+// Automatic achievement standard distribution algorithm:
+// Priority 1: Actual regular exam weeks -> Full exam standards (code only, range-abbreviated)
+// Priority 2: Performance assessment weeks -> Performance-specific selected standards
+// Priority 3: General lesson & formative assessment weeks -> Sequentially allocated midterm/final standards
+export function computeDistributedStandards(
+  schedules: ScheduleItem[],
+  data: PlanData
+): string[] {
+  const result: string[] = new Array(schedules.length).fill("");
+
+  const midCodes = expandRangeCodes(data.midStd || "");
+  sortAchievementStandardCodes(midCodes);
+
+  const finalCodes = expandRangeCodes(data.finalStd || "");
+  sortAchievementStandardCodes(finalCodes);
+
+  const { midExamWeekIndex, finalExamWeekIndex } = getExamWeekIndices(schedules, data);
+
+  // Identify which weeks are actual regular exam weeks and which are performance assessment weeks
+  const actualExamWeekMap = new Map<number, { type: "mid" | "final"; std?: string }>();
+  const perfWeekStandardsMap = new Map<number, string[]>();
+
+  schedules.forEach((item, idx) => {
+    if (item.weekDate) {
+      const examInfo = getOverlappingRegularExamForWeek(item.weekDate, data);
+      if (examInfo) {
+        actualExamWeekMap.set(idx, { type: examInfo.type, std: examInfo.std });
+      } else {
+        const perfs = getOverlappingPerformancesForWeek(item.weekDate, data);
+        if (perfs.length > 0) {
+          const perfRaw = perfs.map((p) => p.std).filter(Boolean).join(", ");
+          const pCodes = expandRangeCodes(perfRaw);
+          sortAchievementStandardCodes(pCodes);
+          if (pCodes.length > 0) {
+            perfWeekStandardsMap.set(idx, pCodes);
+          }
+        }
+      }
+    }
+  });
+
+  // [규칙 1] 중간시험 성취기준 배분:
+  // 학기 시작부터 「실제 중간시험 실시 전」까지의 수업 주차에 성취기준 코드 순서대로 차례대로 배분
+  const preMidGeneralIndices: number[] = [];
+  const midExamCutoff = midExamWeekIndex !== null ? midExamWeekIndex : Math.min(6, schedules.length);
+  for (let idx = 0; idx < midExamCutoff; idx++) {
+    if (!actualExamWeekMap.has(idx)) {
+      preMidGeneralIndices.push(idx);
+    }
+  }
+
+  if (midCodes.length > 0 && preMidGeneralIndices.length > 0) {
+    const N = preMidGeneralIndices.length;
+    const K = midCodes.length;
+    preMidGeneralIndices.forEach((wIdx, pos) => {
+      const startIdx = Math.floor((pos * K) / N);
+      const endIdx = Math.max(startIdx, Math.floor(((pos + 1) * K) / N) - 1);
+      const assigned = midCodes.slice(startIdx, Math.min(K, endIdx + 1));
+      if (assigned.length > 0) {
+        result[wIdx] = assigned.map((c) => `[${c}]`).join(", ");
+      }
+    });
+  }
+
+  // [규칙 2] 기말시험 성취기준 배분:
+  // 실제 중간시험 이후 수업 주차부터 「실제 기말시험 실시 전」까지 차례대로 배분
+  const postMidGeneralIndices: number[] = [];
+  const finExamCutoff = finalExamWeekIndex !== null ? finalExamWeekIndex : schedules.length;
+  for (let idx = midExamCutoff + 1; idx < finExamCutoff; idx++) {
+    if (!actualExamWeekMap.has(idx)) {
+      postMidGeneralIndices.push(idx);
+    }
+  }
+
+  if (finalCodes.length > 0 && postMidGeneralIndices.length > 0) {
+    const N = postMidGeneralIndices.length;
+    const K = finalCodes.length;
+    postMidGeneralIndices.forEach((wIdx, pos) => {
+      const startIdx = Math.floor((pos * K) / N);
+      const endIdx = Math.max(startIdx, Math.floor(((pos + 1) * K) / N) - 1);
+      const assigned = finalCodes.slice(startIdx, Math.min(K, endIdx + 1));
+      if (assigned.length > 0) {
+        result[wIdx] = assigned.map((c) => `[${c}]`).join(", ");
+      }
+    });
+  }
+
+  // 기말시험 이후 주차 (예: 20주차)
+  if (finalCodes.length > 0 && finalExamWeekIndex !== null) {
+    for (let idx = finalExamWeekIndex + 1; idx < schedules.length; idx++) {
+      if (!actualExamWeekMap.has(idx) && !result[idx]) {
+        result[idx] = `[${finalCodes[finalCodes.length - 1]}]`;
+      }
+    }
+  }
+
+  // [규칙 3 (2순위)] 수행평가 실시 주차: 해당 수행평가 계획에서 선택한 성취기준을 최우선 적용
+  perfWeekStandardsMap.forEach((pCodes, wIdx) => {
+    result[wIdx] = pCodes.map((c) => `[${c}]`).join(", ");
+  });
+
+  // [규칙 4 (1순위)] 실제 중간/기말시험 실시 주차: 해당 시험 성취기준 전체를 범위 축약 코드만 표시
+  actualExamWeekMap.forEach((exam, wIdx) => {
+    if (exam.type === "mid") {
+      result[wIdx] = formatStdCodesForDisplay(data.midStd || exam.std || "");
+    } else {
+      result[wIdx] = formatStdCodesForDisplay(data.finalStd || exam.std || "");
+    }
+  });
+
+  // 안전장치: 성취기준 칸에 빈칸이나 "-"가 남지 않도록 보완
+  schedules.forEach((item, idx) => {
+    if (!result[idx] || !result[idx].trim()) {
+      if (item.std && item.std.trim() && item.std.trim() !== "-") {
+        result[idx] = item.std.trim();
+      } else if (idx <= midExamCutoff && midCodes.length > 0) {
+        result[idx] = `[${midCodes[0]}]`;
+      } else if (finalCodes.length > 0) {
+        result[idx] = `[${finalCodes[0]}]`;
+      }
+    }
+  });
+
+  return result;
+}
+
+// Function to auto-sync schedule items with exam standards (mid/final), performance assessments, and pre-performance formative assessments
+export function syncScheduleWithPerformances(
+  schedules: ScheduleItem[],
+  data: PlanData
+): { schedules: ScheduleItem[]; changed: boolean } {
+  let changed = false;
+
+  const { midExamWeekIndex } = getExamWeekIndices(schedules, data);
+  const { formativeWeekIndices, formativeNextPerfMap } = getScheduleAssessmentContext(schedules, data);
+  const distributedStandards = computeDistributedStandards(schedules, data);
+
+  const newSchedules = schedules.map((item, idx) => {
+    // 1. Run migration for core idea first
+    const migRes = migrateScheduleItem(item);
+    let curItem = migRes.item;
+    if (migRes.changed) {
+      changed = true;
+    }
+
+    // [우선순위 1] 실제 중간/기말시험 실시 주차 확인
+    const actualExamInfo = curItem.weekDate
+      ? getOverlappingRegularExamForWeek(curItem.weekDate, data)
+      : null;
+
+    if (actualExamInfo) {
+      const examType = actualExamInfo.type === "mid" ? "정기시험(중간시험)" : "정기시험(기말시험)";
+      const examStd = distributedStandards[idx] || (actualExamInfo.type === "mid"
+        ? formatStdCodesForDisplay(data.midStd || actualExamInfo.std || "")
+        : formatStdCodesForDisplay(data.finalStd || actualExamInfo.std || ""));
+
+      const normCurType = (curItem.type || "").trim();
+      const normCurTopic = (curItem.topic || "").trim();
+      const normCurDetail = (curItem.detail || "").trim();
+      const normCurStd = (curItem.std || "").trim();
+
+      if (
+        normCurType !== examType ||
+        normCurTopic !== "-" ||
+        normCurDetail !== "-" ||
+        normCurStd !== examStd
+      ) {
+        changed = true;
+      }
+
+      return {
+        ...curItem,
+        type: examType,
+        topic: "-",
+        detail: "-",
+        std: examStd,
+      };
+    }
+
+    // 2. 일반 수업 주차 (실제 시험 주차가 아닌 주차)
+    // A. 기본 정기시험 평가유형 결정
+    // midExamWeekIndex 이전 주차: "정기시험(중간시험)"
+    // midExamWeekIndex 이후 주차: "정기시험(기말시험)"
+    const isBeforeMidExam = midExamWeekIndex !== null ? idx < midExamWeekIndex : idx < 7;
+    const baseRegularExamType = isBeforeMidExam ? "정기시험(중간시험)" : "정기시험(기말시험)";
+
+    // B. 수행평가 실시 여부 확인
+    const matchedPerfs = curItem.weekDate
+      ? getOverlappingPerformancesForWeek(curItem.weekDate, data)
+      : [];
+    const isPerfWeek = matchedPerfs.length > 0;
+
+    // C. 형성평가 주차 (수행평가 실시 바로 전 주) 여부 확인
+    const isFormativeWeek = !isPerfWeek && formativeWeekIndices.has(idx);
+
+    // D. 최종 평가 유형 결정
+    let expectedType = baseRegularExamType;
+    if (isPerfWeek) {
+      expectedType = `${baseRegularExamType}, 수행평가`;
+    } else if (isFormativeWeek) {
+      expectedType = `${baseRegularExamType}, 형성평가`;
+    }
+
+    if ((curItem.type || "").trim() !== expectedType.trim()) {
+      changed = true;
+      curItem = { ...curItem, type: expectedType };
+    }
+
+    // E. 성취기준 자동 배분 반영 (우선순위 2 & 3)
+    const expectedStd = distributedStandards[idx];
+    if (expectedStd && (curItem.std || "").trim() !== expectedStd.trim()) {
+      changed = true;
+      curItem = { ...curItem, std: expectedStd };
+    }
+
+    // E-2. 단원명(주제) 자동 연결 (공식 교육과정 기반)
+    const effectiveStd = curItem.std || expectedStd || "";
+    const officialUnitTitles = getUnitTitlesForStandards(
+      effectiveStd,
+      data.curriculumFullText,
+      data.curriculumSubjects,
+      data.curriculumSelectedOriginalIdx
+    );
+    const officialBaseTopic = officialUnitTitles.join("\n").trim();
+    const existingIdea = extractCoreIdea(curItem.topic || "");
+
+    let expectedTopic = curItem.topic || "";
+    if (officialBaseTopic) {
+      if (existingIdea) {
+        expectedTopic = `${officialBaseTopic}\n\n[핵심 아이디어]\n${existingIdea}`;
+      } else {
+        expectedTopic = officialBaseTopic;
+      }
+    } else {
+      // If official curriculum title cannot be found (e.g. no HWP or standard not in HWP)
+      // Clean up any residual unit titles from previous subject (e.g. Chemistry sample text if subject is not Chemistry)
+      const curTopic = curItem.topic || "";
+      const baseTopic = curTopic.split(/\[핵심\s*아이디어\]/i)[0].trim();
+      const isChemistryResidual =
+        (baseTopic.includes("물질의 상태") || baseTopic.includes("기체와 액체") || baseTopic.includes("반응엔탈피") || baseTopic.includes("화학 평형")) &&
+        data.subjectName &&
+        !data.subjectName.includes("화학");
+
+      if (isChemistryResidual) {
+        expectedTopic = existingIdea ? `[핵심 아이디어]\n${existingIdea}` : "";
+      }
+    }
+
+    if ((curItem.topic || "").trim() !== expectedTopic.trim()) {
+      changed = true;
+      curItem = { ...curItem, topic: expectedTopic };
+    }
+
+    // F. 수업 세부 방법 (detail) 정리
+    let updatedDetail = curItem.detail || "";
+    if (isPerfWeek) {
+      // 수행평가 실시 주차:
+      // - 핵심질문, 핵심개념, 일반 수업 방법, AI 활용 방안 등 제외
+      // - 오직 [수행평가 내용]과 [수행지시어]만 포함
+      const hasCoreQuestion = updatedDetail.includes("[핵심질문]") || updatedDetail.includes("[핵심개념]");
+      const hasPerfContent = updatedDetail.includes("[수행평가 내용]") || updatedDetail.includes("[수행평가]");
+      const hasDirective = updatedDetail.includes("[수행지시어]");
+
+      if (hasCoreQuestion || !hasPerfContent || !hasDirective || !updatedDetail.trim()) {
+        const cleanPerfDetail = buildDefaultPerfWeekDetail(matchedPerfs, data);
+        if (cleanPerfDetail !== updatedDetail) {
+          updatedDetail = cleanPerfDetail;
+          changed = true;
+        }
+      }
+    } else {
+      // 일반 수업 주차 및 형성평가 주차:
+      // 혹시 남아있을 수 있는 잘못된 [수행평가 주간의 수업 세부 방법]이나 ■ [수행평가...] 잔재 정리
+      if (
+        updatedDetail.includes("■ [수행평가") ||
+        updatedDetail.includes("■[수행평가") ||
+        updatedDetail.includes("[수행평가 주간") ||
+        updatedDetail.includes("[AI 활용 방안]")
+      ) {
+        let cleaned = updatedDetail
+          .replace(/\[수행평가\s*주간의\s*수업\s*세부\s*방법\]\s*/gi, "")
+          .replace(/■\s*\[수행평가\s*\d*\][^\n]*\n(?:-\s*[^\n]*\n?)*(?:\[AI\s*활용\s*방안\]\s*\n?(?:-\s*[^\n]*\n?)*)?/gi, "")
+          .replace(/\n{3,}/g, "\n\n")
+          .trim();
+
+        const weekNum = idx + 1;
+        const isEven = weekNum % 2 === 0;
+
+        if (isFormativeWeek) {
+          const upcoming = formativeNextPerfMap.get(idx);
+          cleaned = buildDefaultFormativeWeekDetail(upcoming, data, isEven);
+        } else if (!cleaned.includes("[핵심질문]") && !cleaned.includes("[핵심개념]")) {
+          cleaned = `[핵심질문]\n성취기준 도달을 위한 탐구 및 평가 활동을 통해 무엇을 설명할 수 있는가?${isEven ? `\n\n[핵심개념]\n주요 학습 원리 및 핵심 개념` : ""}`;
+        }
+
+        if (cleaned !== updatedDetail) {
+          updatedDetail = cleaned;
+          changed = true;
+        }
+      }
+    }
+
+    return {
+      ...curItem,
+      detail: updatedDetail,
+    };
+  });
+
+  return { schedules: newSchedules, changed };
+}
 
 interface Step4WeeklyScheduleProps {
   data: PlanData;
@@ -23,9 +624,10 @@ export const Step4WeeklySchedule: React.FC<Step4WeeklyScheduleProps> = ({
   onOpenStdModal,
   showToast,
 }) => {
-  const [detailChecks, setDetailChecks] = useState<Record<number, string[]>>({});
   const [detailLoading, setDetailLoading] = useState<Record<number, boolean>>({});
-  const [distributeLoading, setDistributeLoading] = useState<boolean>(false);
+  const [allLoading, setAllLoading] = useState<boolean>(false);
+  const [batchProgress, setBatchProgress] = useState<{ current: number; total: number } | null>(null);
+  const [showConfirmModal, setShowConfirmModal] = useState<boolean>(false);
 
   // Helper: parse class schedule string "2A(월6, 화5, 수7, 목5)"
   const parseClassSchedule = (str: string) => {
@@ -42,335 +644,571 @@ export const Step4WeeklySchedule: React.FC<Step4WeeklyScheduleProps> = ({
     return { grade, weekdays };
   };
 
-  // Helper: parse date range "7.20. ~ 7.24."
-  const parseWeekDateRange = (weekDateStr: string) => {
-    if (!weekDateStr) return null;
-    const parts = weekDateStr.split("~").map((s) => s.trim().replace(/\.$/, ""));
-    if (parts.length !== 2) return null;
-    const toDate = (s: string) => {
-      const nums = s.split(".").map((v) => parseInt(v.trim(), 10)).filter((v) => !isNaN(v));
-      if (nums.length < 2) return null;
-      return new Date(2026, nums[0] - 1, nums[1]);
-    };
-    const start = toDate(parts[0]);
-    const end = toDate(parts[1]);
-    if (!start || !end) return null;
-    return { start, end };
-  };
+  // Helper: get base hours for a week given date range and grade/weekdays
+  const computeBaseHoursForWeek = (
+    weekDateStr: string,
+    grade: number,
+    weekdays: Set<string>
+  ): number => {
+    if (!weekDateStr) return weekdays.size;
 
-  const toDateKey = (d: Date) => {
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    return `${y}-${m}-${day}`;
-  };
+    const parts = weekDateStr.split("~").map((s) => s.trim());
+    if (parts.length < 2) return weekdays.size;
 
-  const isDateBlockedForGrade = (d: Date, grade: number) => {
-    const key = toDateKey(d);
-    return CALENDAR_BLOCKED_DATES.some((ev) => {
-      if (key < ev.start || key > ev.end) return false;
-      return ev.grades === "all" || (Array.isArray(ev.grades) && ev.grades.includes(grade));
-    });
-  };
+    const startMatch = parts[0].match(/(\d+)\.(\d+)/);
+    const endMatch = parts[1].match(/(\d+)\.(\d+)/);
+    if (!startMatch || !endMatch) return weekdays.size;
 
-  const getEffectiveWeekday = (d: Date) => {
-    const key = toDateKey(d);
-    return WEEKDAY_SUBSTITUTIONS[key] || KOREAN_WEEKDAYS[d.getDay()];
-  };
+    const startM = parseInt(startMatch[1], 10);
+    const startD = parseInt(startMatch[2], 10);
+    const endM = parseInt(endMatch[1], 10);
+    const endD = parseInt(endMatch[2], 10);
 
-  const computeWeekHours = (weekDateStr: string, weekdaySet: Set<string>, grade: number) => {
-    const range = parseWeekDateRange(weekDateStr);
-    if (!range) return null;
+    const year = 2026;
+    const startDate = new Date(year, startM - 1, startD);
+    const endDate = new Date(year, endM - 1, endD);
+
+    if (endDate < startDate) {
+      endDate.setFullYear(year + 1);
+    }
+
     let count = 0;
-    const cur = new Date(range.start);
-    while (cur <= range.end) {
-      if (!isDateBlockedForGrade(cur, grade)) {
-        const wd = getEffectiveWeekday(cur);
-        if (weekdaySet.has(wd)) count++;
+    const cur = new Date(startDate);
+    while (cur <= endDate) {
+      const m = cur.getMonth() + 1;
+      const d = cur.getDate();
+      const dateKey = `${m}.${d}.`;
+      const dayOfWeekIdx = cur.getDay();
+
+      const koreanDayNames = ["일", "월", "화", "수", "목", "금", "토"];
+      const effectiveDay = WEEKDAY_SUBSTITUTIONS[dateKey] || koreanDayNames[dayOfWeekIdx];
+
+      const isBlocked =
+        CALENDAR_BLOCKED_DATES[dateKey] &&
+        (CALENDAR_BLOCKED_DATES[dateKey].grades.includes("all") ||
+          CALENDAR_BLOCKED_DATES[dateKey].grades.includes(grade));
+
+      if (weekdays.has(effectiveDay) && !isBlocked) {
+        count++;
       }
       cur.setDate(cur.getDate() + 1);
     }
     return count;
   };
 
-  // Recompute hours for all weeks
+  // Recompute all hours and cumulative
   const recomputeAllHours = () => {
-    const parsed = parseClassSchedule(data.classDays);
-    if (!parsed) return;
+    const classInfo = parseClassSchedule(data.classSchedule);
+    if (!classInfo) {
+      showToast("시간표 형식을 확인할 수 없어 기본 시수를 유지합니다.");
+      return;
+    }
 
-    let cumulative = 0;
+    let runningSum = 0;
     const updated = data.schedules.map((item) => {
-      if (!item.weekDate) return item;
-      const h = computeWeekHours(item.weekDate, parsed.weekdays, parsed.grade);
-      if (h === null) return item;
-      cumulative += h;
+      const calcHours = computeBaseHoursForWeek(item.weekDate, classInfo.grade, classInfo.weekdays);
+      runningSum += calcHours;
       return {
         ...item,
-        hours: String(h),
-        cumulative,
+        hours: String(calcHours),
+        cumulative: runningSum,
       };
     });
 
     onChange((prev) => ({ ...prev, schedules: updated }));
-    showToast("기준학급 시간표 및 2026 학사일정에 맞춰 주차별 시수가 자동 재계산되었습니다.");
+    showToast("모든 주차의 시수와 누계가 재계산되었습니다.");
   };
 
-  // AI Auto-distribution of achievement standards across 20 weeks
-  const handleAiDistributeStandards = () => {
-    const parseCodes = (str: string) => {
-      return ((str || "").match(/\[([^\]]+)\]/g) || []).map((s) => s.slice(1, -1));
-    };
-
-    // Sort strictly in numerical ascending order by ① Domain number and ② Item number
-    const midCodes = sortAchievementStandardCodes(parseCodes(data.midStd));
-    const finalCodes = sortAchievementStandardCodes(parseCodes(data.finalStd));
-
-    if (midCodes.length === 0 && finalCodes.length === 0) {
-      showToast("먼저 2단계 「평가 개요」에서 중간시험/기말시험 성취기준을 선택해주세요.");
-      return;
+  // Auto-migrate misplaced [핵심 아이디어] and auto-sync exam standards (mid/final) & performance assessments
+  useEffect(() => {
+    const { schedules: syncedSchedules, changed } = syncScheduleWithPerformances(data.schedules, data);
+    if (changed) {
+      onChange((prev) => ({ ...prev, schedules: syncedSchedules }));
     }
+  }, [
+    data.schedules,
+    data.midStd,
+    data.finalStd,
+    data.midStartDate,
+    data.midEndDate,
+    data.finalStartDate,
+    data.finalEndDate,
+    data.examCount,
+    data.perfCount,
+    data.perf1Name,
+    data.perf1StartDate,
+    data.perf1EndDate,
+    data.perf1Std,
+    data.perf1Flow,
+    data.perf1Method,
+    data.perf2Name,
+    data.perf2StartDate,
+    data.perf2EndDate,
+    data.perf2Std,
+    data.perf2Flow,
+    data.perf2Method,
+    data.perf3Name,
+    data.perf3StartDate,
+    data.perf3EndDate,
+    data.perf3Std,
+    data.perf3Flow,
+    data.perf3Method,
+    data.perf4Name,
+    data.perf4StartDate,
+    data.perf4EndDate,
+    data.perf4Std,
+    data.perf4Flow,
+    data.perf4Method,
+    data.curriculumFullText,
+    data.curriculumSubjects,
+    data.curriculumSelectedOriginalIdx,
+    data.subjectName,
+    onChange,
+  ]);
 
-    const parsed = parseClassSchedule(data.classDays);
-    if (!parsed) {
-      showToast("1단계의 「기준학급」 정보를 확인해주세요. (예: 2A(월6, 화5, 수7, 목5))");
-      return;
-    }
-
-    setDistributeLoading(true);
-
-    const periods = { midStart: "2026-10-14", midEnd: "2026-10-19", finalStart: "2026-12-17", finalEnd: "2026-12-22" };
-    const beforeMid: Array<{ idx: number; hours: number }> = [];
-    const midToFinal: Array<{ idx: number; hours: number }> = [];
-
-    data.schedules.forEach((item, idx) => {
-      if (!item.weekDate) return;
-      const range = parseWeekDateRange(item.weekDate);
-      if (!range) return;
-      const hours = parseInt(item.hours, 10) || 0;
-      if (hours <= 0) return;
-
-      const startKey = toDateKey(range.start);
-      const endKey = toDateKey(range.end);
-
-      if (endKey < periods.midStart) {
-        beforeMid.push({ idx, hours });
-      } else if (startKey > periods.midEnd && endKey < periods.finalStart) {
-        midToFinal.push({ idx, hours });
-      }
-    });
-
-    // Sequential forward distribution without looping backwards or duplicate skipping
-    const distributeSequential = (sortedCodes: string[], weekPool: Array<{ idx: number; hours: number }>) => {
-      const res: Record<number, string[]> = {};
-      if (!sortedCodes.length || !weekPool.length) return res;
-
-      const totalCodes = sortedCodes.length;
-      const totalWeeks = weekPool.length;
-      let codeCursor = 0;
-
-      for (let wIdx = 0; wIdx < totalWeeks; wIdx++) {
-        if (codeCursor >= totalCodes) break;
-
-        const remainingCodes = totalCodes - codeCursor;
-        const remainingWeeks = totalWeeks - wIdx;
-
-        // If remaining codes exceed remaining available teaching weeks, assign 2 (or more) consecutive items
-        const takeCount = Math.max(1, Math.ceil(remainingCodes / remainingWeeks));
-        const assigned = sortedCodes.slice(codeCursor, codeCursor + takeCount);
-        res[weekPool[wIdx].idx] = assigned;
-        codeCursor += takeCount;
-      }
-
-      return res;
-    };
-
-    const midAssign = distributeSequential(midCodes, beforeMid);
-    const finalAssign = distributeSequential(finalCodes, midToFinal);
-
-    const updated = data.schedules.map((item, idx) => {
-      const assignedMid = midAssign[idx];
-      const assignedFinal = finalAssign[idx];
-
-      if (assignedMid !== undefined || assignedFinal !== undefined) {
-        const codes = (assignedMid || []).concat(assignedFinal || []);
-        return {
-          ...item,
-          std: codes.length ? codes.map((c) => `[${c}]`).join(", ") : "",
-        };
-      }
-      return item;
-    });
-
-    onChange((prev) => ({ ...prev, schedules: updated }));
-    setDistributeLoading(false);
-    showToast("성취기준이 교육과정 코드 순서(영역 및 번호 오름차순)대로 차례대로 배분되었습니다.");
-  };
-
-  // Helper to determine week number and default checked items (odd: idea+question, even: concept+question)
+  // Helper to determine week number (1-based)
   const getWeekNumber = (idx: number, weekLabel?: string): number => {
-    const m = (weekLabel || "").match(/(\d+)/);
+    const str = weekLabel || data.schedules[idx]?.weekLabel || "";
+    const m = str.match(/(\d+)/);
     if (m) {
       return parseInt(m[1], 10);
     }
     return idx + 1;
   };
 
-  const getDefaultChecksForWeek = (idx: number, weekLabel?: string): string[] => {
-    const weekNum = getWeekNumber(idx, weekLabel);
-    const isOdd = weekNum % 2 === 1;
-    return isOdd ? ["idea", "question"] : ["concept", "question"];
-  };
-
-  const getSelectedChecks = (idx: number, weekLabel?: string): string[] => {
-    if (detailChecks[idx] !== undefined) {
-      return detailChecks[idx];
-    }
-    return getDefaultChecksForWeek(idx, weekLabel);
-  };
-
-  // Smart section merger: Preserves unselected existing sections and updates/adds newly selected sections
-  const mergeDetailSections = (
-    existingText: string,
-    newGeneratedText: string,
-    checkedKeys: string[]
-  ): string => {
-    if (!existingText || !existingText.trim()) {
-      return newGeneratedText.trim();
-    }
-
-    const extractSections = (text: string) => {
-      const regex = /\[(핵심\s*아이디어|핵심개념|핵심질문|수행지시어)\]([\s\S]*?)(?=\[(?:핵심\s*아이디어|핵심개념|핵심질문|수행지시어)\]|$)/g;
-      const sections: Record<string, string> = {};
-      let match;
-      while ((match = regex.exec(text)) !== null) {
-        const normKey = match[1].replace(/\s+/g, "");
-        sections[normKey] = match[2].trim();
-      }
-      return sections;
-    };
-
-    const existingSections = extractSections(existingText);
-    const newSections = extractSections(newGeneratedText);
-
-    const keyToNorm: Record<string, string> = {
-      idea: "핵심아이디어",
-      concept: "핵심개념",
-      question: "핵심질문",
-      verb: "수행지시어",
-    };
-
-    // If existing text has no bracketed tags at all, safely append
-    if (Object.keys(existingSections).length === 0) {
-      return `${existingText.trim()}\n\n${newGeneratedText.trim()}`;
-    }
-
-    // Update or insert generated sections into existing
-    checkedKeys.forEach((key) => {
-      const norm = keyToNorm[key];
-      if (norm && newSections[norm]) {
-        existingSections[norm] = newSections[norm];
-      }
+  // Check if any schedule already has AI generated content
+  const hasExistingAiContent = (): boolean => {
+    return data.schedules.some((s) => {
+      const topicHasIdea = /\[핵심\s*아이디어\]/i.test(s.topic || "");
+      const detailHasSections =
+        /\[핵심질문\]/i.test(s.detail || "") ||
+        /\[핵심개념\]/i.test(s.detail || "") ||
+        /\[수행지시어\]/i.test(s.detail || "") ||
+        /■\s*\[수행평가/i.test(s.detail || "");
+      return topicHasIdea || detailHasSections;
     });
-
-    const order = ["핵심아이디어", "핵심개념", "핵심질문", "수행지시어"];
-    const resultParts: string[] = [];
-
-    order.forEach((norm) => {
-      if (existingSections[norm]) {
-        const displayTag = norm === "핵심아이디어" ? "[핵심 아이디어]" : `[${norm}]`;
-        resultParts.push(`${displayTag}\n${existingSections[norm]}`);
-      }
-    });
-
-    return resultParts.length ? resultParts.join("\n\n") : newGeneratedText.trim();
   };
 
-  // AI Recommendation for Lesson Detail Sections
-  const handleRecommendDetail = async (idx: number) => {
+  // Batch Multi-Week AI Generator function: processes up to 4-5 weeks in a single Gemini request
+  const generateBatchWeeksContent = async (
+    itemsWithIdx: { idx: number; item: ScheduleItem }[]
+  ): Promise<Record<number, { topic: string; detail: string }>> => {
+    if (itemsWithIdx.length === 0) return {};
+
+    const { formativeWeekIndices, formativeNextPerfMap } = getScheduleAssessmentContext(data.schedules, data);
+
+    const weekBlocksPrompt = itemsWithIdx
+      .map(({ idx, item }) => {
+        const weekNum = getWeekNumber(idx, item.weekLabel);
+        const isEven = weekNum % 2 === 0;
+        const overlappingPerfs = item.weekDate ? getOverlappingPerformancesForWeek(item.weekDate, data) : [];
+        const isPerfWeek = overlappingPerfs.length > 0;
+        const isFormativeWeek = formativeWeekIndices.has(idx);
+        const upcomingPerf = formativeNextPerfMap.get(idx);
+        const typeStr = item.type || "";
+        const isExamWeek =
+          typeStr.includes("중간시험") ||
+          typeStr.includes("기말시험") ||
+          typeStr.includes("지필평가") ||
+          typeStr.includes("정기시험");
+
+        const stdText = getExpandedStdText(
+          item.std,
+          data.curriculumFullText,
+          data.curriculumSubjects,
+          data.curriculumSelectedOriginalIdx
+        );
+        const baseTopic = (item.topic || "").split(/\[핵심\s*아이디어\]/i)[0].trim();
+
+        let weekTypeDescription = "일반 수업 주간";
+        let specificNotes = "";
+
+        if (isPerfWeek) {
+          weekTypeDescription = "수행평가 실시 주간";
+          specificNotes = overlappingPerfs
+            .map((p) => {
+              const pStdText = getExpandedStdText(
+                p.std || item.std,
+                data.curriculumFullText,
+                data.curriculumSubjects,
+                data.curriculumSelectedOriginalIdx
+              );
+              return `  * [실시 수행평가]: 수행평가 ${p.perfIndex} (${p.name || `수행평가 ${p.perfIndex}`}) / 과제흐름: ${p.flow || "탐구 보고서 작성"} / 성취기준: ${pStdText}`;
+            })
+            .join("\n");
+        } else if (isFormativeWeek && upcomingPerf) {
+          weekTypeDescription = "형성평가 주간 (다음 주 수행평가 전주 연동)";
+          const nextStdText = getExpandedStdText(
+            upcomingPerf.std,
+            data.curriculumFullText,
+            data.curriculumSubjects,
+            data.curriculumSelectedOriginalIdx
+          );
+          specificNotes = `  * [다음 주 실시 예정 수행평가]: 수행평가 ${upcomingPerf.perfIndex} (${upcomingPerf.name || `수행평가 ${upcomingPerf.perfIndex}`}) / 과제흐름: ${upcomingPerf.flow || "탐구 과제"} / 성취기준: ${nextStdText}`;
+        } else if (isExamWeek) {
+          weekTypeDescription = "정기 지필평가(시험) 주간";
+        }
+
+        return `### [WEEK_${idx + 1}]
+- 주차 라벨: ${item.weekLabel} (${isEven ? "짝수주: 핵심개념 포함 필수" : "홀수주: 핵심개념 제외"})
+- 시수: ${item.hours}시간
+- 단원명: ${baseTopic || "(단원 미지정)"}
+- 성취기준: ${stdText || "(성취기준 미지정)"}
+- 평가 유형: ${item.type || "형성평가"}
+- 주차 유형: ${weekTypeDescription}${specificNotes ? `\n${specificNotes}` : ""}`;
+      })
+      .join("\n\n");
+
+    const prompt = `너는 대한민국 2022 개정 교육과정 기반 고등학교 수업 및 평가 설계 전문가야.
+아래 제공된 주차별 성취기준과 수업 및 평가 계획을 분석하여, 각 주차의 [핵심 아이디어]와 [평가와 연계한 수업 세부 방법]을 작성해줘.
+
+[과목명]
+${data.subjectName || ""}
+
+[주차별 정보]
+${weekBlocksPrompt}
+
+[작성 규칙 - 절대 엄수]
+1. [핵심 아이디어] (모든 주차 공통):
+   - 시수가 있는 모든 주차에 대해 단원 및 성취기준을 아우르는 일반화된 원리나 개념적 통찰을 1~2문장으로 작성 (단원명 아래 topic에 반영됨).
+
+2. [수행평가 실시 주간]의 수업 세부 방법 (★규칙 엄수):
+   - 수행평가가 실제 실시되는 주차에는 [핵심질문], [핵심개념], 일반 수업 세부 방법, AI 활용 방안 등을 절대로 작성하지 마세요.
+   - 오직 아래 2가지만 작성할 것:
+     ① [수행평가 내용]: 앞의 「수행 과제 흐름」을 1~2문장으로 간단히 요약한 설명
+     ② [수행지시어]: 해당 수행평가 핵심 동사 4~5개 (예: 모델링하다, 분석하다, 추론하다, 설명하다)
+
+3. [형성평가 주간(수행평가 전주)]의 수업 세부 방법:
+   - ① [핵심질문]: 다음 주 수행평가 준비 및 성취기준 도달 점검 질문
+   - ② [핵심개념]: 짝수 주차인 경우만 작성 (홀수 주차는 제외)
+   - ③ [수행지시어]: 형성평가 점검 동사 4~5개 (예: 비교하다, 유추하다, 적용하다, 확인하다)
+
+4. [일반 수업 주간]의 수업 세부 방법:
+   - ① [핵심질문]: 성취기준 1개당 탐구 유도 질문 1개
+   - ② [핵심개념]: 짝수 주차인 경우만 작성 (홀수 주차는 제외)
+   - [수행지시어] 및 [수행평가 내용]은 절대 작성하지 마세요.
+
+[출력 형식 - 반드시 주차별 구분자를 지켜 출력할 것]
+<<<WEEK_1>>>
+[핵심 아이디어]
+(1~2문장 개념적 통찰)
+
+[핵심질문]
+(성취기준 1개당 질문 1개)
+<<<END_WEEK_1>>>
+
+<<<WEEK_2>>>
+[핵심 아이디어]
+(1~2문장)
+
+[핵심질문]
+(성취기준 1개당 질문 1개)
+
+[핵심개념] (※ 짝수주이므로 작성)
+(주요 개념 키워드 및 원리)
+<<<END_WEEK_2>>>
+
+<<<WEEK_3>>> (※ 수행평가 전주 형성평가 주간 예시)
+[핵심 아이디어]
+(1~2문장)
+
+[핵심질문]
+(다음 주 수행평가 대비 점검 질문)
+
+[수행지시어]
+비교하다, 유추하다, 적용하다, 확인하다
+<<<END_WEEK_3>>>
+
+<<<WEEK_4>>> (※ 수행평가 실시 주간 예시 - 핵심질문/개념 제외, 내용과 지시어만 작성)
+[핵심 아이디어]
+(1~2문장)
+
+[수행평가 내용]
+분자의 입체 구조를 모델링하고 극성과 물질의 성질 간 관계를 분석하여 결과를 보고서로 작성한다.
+
+[수행지시어]
+모델링하다, 분석하다, 추론하다, 설명하다
+<<<END_WEEK_4>>>
+
+(위와 동일하게 각 주차별 <<<WEEK_번호>>> ... <<<END_WEEK_번호>>> 태그로 정확히 감싸서 출력)`;
+
+    const results: Record<number, { topic: string; detail: string }> = {};
+
+    try {
+      const generated = await generateWithGemini({ prompt });
+
+      itemsWithIdx.forEach(({ idx, item }) => {
+        const weekNum = getWeekNumber(idx, item.weekLabel);
+        const isEven = weekNum % 2 === 0;
+        const overlappingPerfs = item.weekDate ? getOverlappingPerformancesForWeek(item.weekDate, data) : [];
+        const isPerfWeek = overlappingPerfs.length > 0;
+        const isFormativeWeek = !isPerfWeek && formativeWeekIndices.has(idx);
+        const upcomingPerf = formativeNextPerfMap.get(idx);
+
+        const weekTagRegex = new RegExp(`<<<WEEK_${weekNum}>>>([\\s\\S]*?)<<<END_WEEK_${weekNum}>>>`, "i");
+        const match = generated.match(weekTagRegex);
+        const weekContent = match ? match[1].trim() : "";
+
+        if (weekContent) {
+          const parsed = parseSections(weekContent);
+          const generatedIdea = parsed["핵심아이디어"] || "";
+
+          let updatedTopic = item.topic || "";
+          if (generatedIdea) {
+            updatedTopic = updateTopicWithIdea(updatedTopic, generatedIdea);
+          }
+
+          const parts: string[] = [];
+
+          if (isPerfWeek) {
+            // [수행평가 실시 주간]: 핵심질문/개념 제외, 수행평가 내용 + 수행지시어만 포함
+            let perfSummary = parsed["수행평가내용"] || parsed["수행평가"];
+            if (!perfSummary) {
+              const defaultPerfDetail = buildDefaultPerfWeekDetail(overlappingPerfs, data);
+              const matchSummary = defaultPerfDetail.match(/\[수행평가 내용\]([\s\S]*?)(?=\[수행지시어\]|$)/i);
+              perfSummary = matchSummary
+                ? matchSummary[1].trim()
+                : `${overlappingPerfs[0]?.name || "수행평가"} 과제를 단계별로 수행하고 결과를 분석하여 보고서로 작성한다.`;
+            }
+            parts.push(`[수행평가 내용]\n${perfSummary}`);
+
+            const actionVerbs = parsed["수행지시어"] || "모델링하다, 분석하다, 추론하다, 설명하다";
+            parts.push(`[수행지시어]\n${actionVerbs}`);
+          } else if (isFormativeWeek) {
+            // [형성평가 주간]: 핵심질문 + (짝수주 핵심개념) + 수행지시어
+            if (parsed["핵심질문"]) {
+              parts.push(`[핵심질문]\n${parsed["핵심질문"]}`);
+            } else {
+              parts.push(`[핵심질문]\n다음 주 실시될 수행평가의 성공적 수행과 성취기준 도달을 위해 핵심 개념과 원리를 어떻게 점검할 것인가?`);
+            }
+
+            if (isEven) {
+              if (parsed["핵심개념"]) {
+                parts.push(`[핵심개념]\n${parsed["핵심개념"]}`);
+              } else {
+                parts.push(`[핵심개념]\n관련 단원 주요 개념 및 형성평가 점검 요소`);
+              }
+            }
+
+            const actionVerbs = parsed["수행지시어"] || "비교하다, 유추하다, 적용하다, 확인하다";
+            parts.push(`[수행지시어]\n${actionVerbs}`);
+          } else {
+            // [일반 수업 주간]: 핵심질문 + (짝수주 핵심개념)
+            if (parsed["핵심질문"]) {
+              parts.push(`[핵심질문]\n${parsed["핵심질문"]}`);
+            } else {
+              parts.push(`[핵심질문]\n성취기준 도달을 위한 탐구 활동을 통해 주요 개념과 원리를 어떻게 도출하고 설명할 수 있는가?`);
+            }
+
+            if (isEven) {
+              if (parsed["핵심개념"]) {
+                parts.push(`[핵심개념]\n${parsed["핵심개념"]}`);
+              } else {
+                parts.push(`[핵심개념]\n관련 단원의 주요 개념 및 원리`);
+              }
+            }
+          }
+
+          const updatedDetail = parts.join("\n\n");
+          results[idx] = { topic: updatedTopic, detail: updatedDetail };
+        } else {
+          // Fallback if parsing specific week tag failed
+          let fallbackDetail = "";
+          if (isPerfWeek) {
+            fallbackDetail = buildDefaultPerfWeekDetail(overlappingPerfs, data);
+          } else if (isFormativeWeek) {
+            fallbackDetail = buildDefaultFormativeWeekDetail(upcomingPerf, data, isEven);
+          } else {
+            fallbackDetail = `[핵심질문]\n성취기준 도달을 위한 핵심 탐구 질문${isEven ? `\n\n[핵심개념]\n단원 핵심 개념 및 원리` : ""}`;
+          }
+          results[idx] = {
+            topic: item.topic || "",
+            detail: fallbackDetail,
+          };
+        }
+      });
+    } catch (err) {
+      console.error("Batch Gemini generation error:", err);
+      throw err;
+    }
+
+    return results;
+  };
+
+  // Run full batch generation for all 1~20 weeks (in smart chunks of 4-5 weeks to prevent rate limits)
+  const runAllAiGeneration = async () => {
+    setAllLoading(true);
+    setBatchProgress(null);
+    showToast("전체 주차 AI 작성을 시작합니다...");
+
+    try {
+      const updatedSchedules = [...data.schedules];
+      
+      // Separate actual exam weeks and active lesson weeks
+      const activeWeeks: { idx: number; item: ScheduleItem }[] = [];
+      updatedSchedules.forEach((item, idx) => {
+        const actualExam = item.weekDate ? getOverlappingRegularExamForWeek(item.weekDate, data) : null;
+        if (actualExam) {
+          // Rule for Actual Exam Week: topic: "-", detail: "-", type: examLabel, std: examStd (code-only range)
+          const examStd = actualExam.std
+            ? formatStdCodesForDisplay(actualExam.std)
+            : (item.std ? formatStdCodesForDisplay(item.std) : "-");
+          updatedSchedules[idx] = {
+            ...updatedSchedules[idx],
+            topic: "-",
+            detail: "-",
+            type: actualExam.label,
+            std: examStd,
+          };
+          return;
+        }
+
+        const hours = parseInt(item.hours, 10) || 0;
+        if (hours > 0) {
+          activeWeeks.push({ idx, item: updatedSchedules[idx] });
+        }
+      });
+
+      if (activeWeeks.length === 0) {
+        onChange((prev) => ({ ...prev, schedules: updatedSchedules }));
+        showToast("정기시험 주차 외에 시수가 배정된 일반 수업 주차가 없습니다.");
+        setAllLoading(false);
+        return;
+      }
+
+      // Chunk into groups of 4 weeks (ensuring at most 4-5 API calls for 20 weeks)
+      const chunkSize = 4;
+      const chunks: { idx: number; item: ScheduleItem }[][] = [];
+      for (let i = 0; i < activeWeeks.length; i += chunkSize) {
+        chunks.push(activeWeeks.slice(i, i + chunkSize));
+      }
+
+      let completedCount = 0;
+      setBatchProgress({ current: 0, total: activeWeeks.length });
+
+      for (let c = 0; c < chunks.length; c++) {
+        const chunk = chunks[c];
+        
+        try {
+          const chunkResults = await generateBatchWeeksContent(chunk);
+          
+          Object.entries(chunkResults).forEach(([idxStr, res]) => {
+            const idx = parseInt(idxStr, 10);
+            if (updatedSchedules[idx]) {
+              updatedSchedules[idx] = {
+                ...updatedSchedules[idx],
+                topic: res.topic,
+                detail: res.detail,
+              };
+              completedCount++;
+            }
+          });
+
+          setBatchProgress({ current: completedCount, total: activeWeeks.length });
+          // Progress state update in real-time
+          onChange((prev) => ({ ...prev, schedules: [...updatedSchedules] }));
+
+          // Gentle pause between chunks to stay well under RPM limits
+          if (c < chunks.length - 1) {
+            await new Promise((resolve) => setTimeout(resolve, 800));
+          }
+        } catch (chunkErr: any) {
+          console.error(`Chunk ${c + 1} failed:`, chunkErr);
+          // Apply fallback for failed chunk's performance weeks and formative weeks
+          const { formativeWeekIndices, formativeNextPerfMap } = getScheduleAssessmentContext(data.schedules, data);
+          chunk.forEach(({ idx, item }) => {
+            const weekNum = getWeekNumber(idx, item.weekLabel);
+            const isEven = weekNum % 2 === 0;
+            const overlappingPerfs = item.weekDate ? getOverlappingPerformancesForWeek(item.weekDate, data) : [];
+            const isFormative = formativeWeekIndices.has(idx);
+            const upcoming = formativeNextPerfMap.get(idx);
+            if (overlappingPerfs.length > 0 && !updatedSchedules[idx].detail) {
+              updatedSchedules[idx] = {
+                ...updatedSchedules[idx],
+                detail: buildDefaultPerfWeekDetail(overlappingPerfs, data),
+              };
+            } else if (isFormative && !updatedSchedules[idx].detail) {
+              updatedSchedules[idx] = {
+                ...updatedSchedules[idx],
+                detail: buildDefaultFormativeWeekDetail(upcoming, data, isEven),
+              };
+            }
+          });
+        }
+      }
+
+      onChange((prev) => ({ ...prev, schedules: updatedSchedules }));
+      showToast(`전체 ${completedCount}개 주차의 AI 작성이 완료되었습니다.`);
+    } catch (err: any) {
+      console.error("All AI Generation Error:", err);
+      showToast(`전체 AI 적용 오류: ${err.message || err}`);
+    } finally {
+      setAllLoading(false);
+      setBatchProgress(null);
+    }
+  };
+
+  // Trigger button click handler
+  const handleAllAiButtonClick = () => {
+    if (allLoading) return;
+
+    if (hasExistingAiContent()) {
+      setShowConfirmModal(true);
+    } else {
+      runAllAiGeneration();
+    }
+  };
+
+  // Single Week Re-generate Handler
+  const handleRegenerateSingleWeek = async (idx: number) => {
     const item = data.schedules[idx];
+
+    // Check if actual regular exam week
+    const actualExam = item.weekDate ? getOverlappingRegularExamForWeek(item.weekDate, data) : null;
+    if (actualExam) {
+      const examStd = actualExam.std
+        ? formatStdCodesForDisplay(actualExam.std)
+        : (item.std ? formatStdCodesForDisplay(item.std) : "-");
+      const updated = [...data.schedules];
+      updated[idx] = {
+        ...updated[idx],
+        topic: "-",
+        detail: "-",
+        type: actualExam.type === "mid" ? "정기시험(중간시험)" : "정기시험(기말시험)",
+        std: examStd,
+      };
+      onChange((prev) => ({ ...prev, schedules: updated }));
+      showToast(`${item.weekLabel}은 실제 정기시험(${actualExam.type === "mid" ? "중간시험" : "기말시험"}) 주차로 '-'가 적용되었습니다.`);
+      return;
+    }
+
     const hours = parseInt(item.hours, 10) || 0;
     if (hours <= 0) {
       showToast("시수가 0인 주차(휴업일/시험 등)에는 AI 작성을 진행하지 않습니다.");
       return;
     }
 
-    const checked = getSelectedChecks(idx, item.weekLabel);
-    if (checked.length === 0) {
-      showToast("AI로 작성할 항목을 하나 이상 체크해주세요.");
-      return;
-    }
-
-    if (!item.std || !item.std.trim()) {
-      showToast("먼저 해당 주차의 성취기준을 지정해주세요.");
-      return;
-    }
-
     setDetailLoading((prev) => ({ ...prev, [idx]: true }));
-
-    const stdText = getExpandedStdText(
-      item.std,
-      data.curriculumFullText,
-      data.curriculumSubjects,
-      data.curriculumSelectedOriginalIdx
-    );
-
-    const sectionInstructions: string[] = [];
-    if (checked.includes("idea")) {
-      sectionInstructions.push(
-        `[핵심 아이디어] 해당 주차 성취기준 문구의 본질적 의미를 아우르는 일반화된 원리나 개념적 통찰을 1~2문장으로 기술`
-      );
-    }
-    if (checked.includes("concept")) {
-      sectionInstructions.push(`[핵심개념] 해당 주차 성취기준을 학습하는 데 필요한 본질적 핵심 개념 키워드 및 원리 명시`);
-    }
-    if (checked.includes("question")) {
-      sectionInstructions.push(`[핵심질문] 학생의 탐구를 유도하고 고차원적 사고를 요구하는 질문 1~2개`);
-    }
-    if (checked.includes("verb")) {
-      sectionInstructions.push(`[수행지시어] 성취기준 도달을 확인하기 위한 구체적인 수행 행동 동사 (예: 분석하다, 비교하다, 설명하다, 모델링하다)`);
-    }
-
-    const prompt = `너는 고등학교 교육과정 및 수업 설계 전문가야. 아래 정보를 바탕으로 "평가와 연계한 수업 세부 방법"의 요청된 항목들을 작성해줘.
-반드시 제공된 성취기준 코드와 성취기준 전체 문구를 충실히 반영하여 작성해야 해.
-
-[주차 및 수업 정보]
-- 과목명: ${data.subjectName || ""}
-- 주차: ${item.weekLabel}
-- 시수: ${item.hours}시간
-- 단원명: ${item.topic || "(단원 미지정)"}
-- 해당 주차 성취기준 (코드 및 상세 문구):
-${stdText}
-- 평가 유형: ${item.type || "형성평가"}
-
-[작성할 항목들]
-${sectionInstructions.join("\n")}
-
-[작성 규칙]
-1. 요청된 항목([핵심 아이디어], [핵심개념], [핵심질문], [수행지시어] 중 요청된 것)만 정확히 작성할 것.
-2. 각 항목은 "[항목명]" 형식으로 시작하고 줄바꿈 후 내용을 작성할 것.
-3. 성취기준 내용과 직결된 정교하고 학술적인 문장으로 작성할 것.`;
-
     try {
-      const generated = await generateWithGemini({ prompt });
-      const merged = mergeDetailSections(item.detail || "", generated.trim(), checked);
-      const updated = [...data.schedules];
-      updated[idx] = { ...updated[idx], detail: merged };
-      onChange((prev) => ({ ...prev, schedules: updated }));
-      showToast(`${item.weekLabel} 수업 세부 방법 AI 작성이 완료되었습니다.`);
+      const resMap = await generateBatchWeeksContent([{ idx, item }]);
+      const res = resMap[idx];
+      if (res) {
+        const updated = [...data.schedules];
+        updated[idx] = {
+          ...updated[idx],
+          topic: res.topic,
+          detail: res.detail,
+        };
+        onChange((prev) => ({ ...prev, schedules: updated }));
+        showToast(`${item.weekLabel} 다시 생성이 완료되었습니다.`);
+      } else {
+        showToast(`${item.weekLabel} 생성에 실패하였습니다.`);
+      }
     } catch (err: any) {
-      console.error("AI Detail error:", err);
-      showToast(`AI 작성 오류: ${err.message || err}`);
+      showToast(`오류 발생: ${err.message || err}`);
     } finally {
       setDetailLoading((prev) => ({ ...prev, [idx]: false }));
     }
-  };
-
-  const toggleCheck = (idx: number, optKey: string, weekLabel?: string) => {
-    setDetailChecks((prev) => {
-      const current = prev[idx] !== undefined ? prev[idx] : getDefaultChecksForWeek(idx, weekLabel);
-      const next = current.includes(optKey) ? current.filter((k) => k !== optKey) : [...current, optKey];
-      return { ...prev, [idx]: next };
-    });
   };
 
   const updateScheduleItem = (idx: number, field: keyof ScheduleItem, val: string) => {
@@ -380,15 +1218,20 @@ ${sectionInstructions.join("\n")}
   };
 
   const addScheduleRow = () => {
+    const newIdx = data.schedules.length;
+    const { midExamWeekIndex } = getExamWeekIndices(data.schedules, data);
+    const isBeforeMid = midExamWeekIndex !== null ? newIdx < midExamWeekIndex : newIdx < 7;
+    const defaultType = isBeforeMid ? "정기시험(중간시험)" : "정기시험(기말시험)";
+
     const newWeek: ScheduleItem = {
-      weekLabel: `${data.schedules.length + 1}주`,
+      weekLabel: `${newIdx + 1}주`,
       weekDate: "",
       weekEvent: "",
       hours: "4",
       topic: "신규 학습 주제",
       std: "",
-      type: "형성평가",
-      detail: "[핵심질문] 탐구 질문을 입력하세요.",
+      type: defaultType,
+      detail: "[핵심질문]\n탐구 질문을 입력하세요.",
     };
     onChange((prev) => ({ ...prev, schedules: [...prev.schedules, newWeek] }));
   };
@@ -399,6 +1242,50 @@ ${sectionInstructions.join("\n")}
 
   return (
     <div className="space-y-5">
+      {/* Confirmation Modal */}
+      {showConfirmModal && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl max-w-md w-full p-5 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="font-bold text-slate-900 text-base">전체 AI 다시 생성 확인</h3>
+                <p className="text-xs text-slate-600 leading-relaxed">
+                  기존에 작성된 진도/수업 AI 내용이 있습니다.<br />
+                  <strong className="text-slate-800">전체 내용을 다시 생성하시겠습니까?</strong>
+                </p>
+                <p className="text-[11px] text-amber-700 mt-1 bg-amber-50 p-2 rounded border border-amber-200">
+                  ※ 교사가 직접 수정한 [핵심 아이디어], [핵심질문/개념/지시어]가 새로 생성된 내용으로 덮어씌워집니다.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setShowConfirmModal(false)}
+                className="px-3.5 py-1.5 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-100 transition-all cursor-pointer"
+              >
+                취소
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowConfirmModal(false);
+                  runAllAiGeneration();
+                }}
+                className="px-4 py-1.5 rounded-lg text-xs font-bold text-white bg-purple-600 hover:bg-purple-700 shadow-md shadow-purple-600/20 transition-all cursor-pointer flex items-center gap-1.5"
+              >
+                <Sparkles className="w-3.5 h-3.5" /> 다시 생성하기
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Header */}
       <div className="border-b border-slate-200 pb-3 flex justify-between items-center gap-2">
         <div>
           <h2 className="text-base font-bold text-slate-800 flex items-center gap-2">
@@ -416,15 +1303,42 @@ ${sectionInstructions.join("\n")}
         </span>
       </div>
 
-      {/* 안내 팁 박스 */}
-      <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3 text-xs text-indigo-900 space-y-1">
-        <div className="font-bold flex items-center gap-1.5 text-indigo-950">
-          <Lightbulb className="w-4 h-4 text-indigo-600 shrink-0" />
-          <span>작성 꿀팁 가이드</span>
+      {/* Compact Clean AI Action Bar */}
+      <div className="bg-white border border-slate-200 rounded-lg p-3 sm:p-3.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+        <div>
+          <h3 className="text-xs sm:text-sm font-bold text-slate-800 flex items-center gap-1.5">
+            <Sparkles className="w-4 h-4 text-purple-600" />
+            <span>진도/수업 AI 작성</span>
+          </h3>
+          <p className="text-[11px] text-slate-500 mt-0.5">
+            성취기준·시수·평가계획을 기준으로 1~20주를 자동 작성합니다.
+          </p>
         </div>
-        <p>• <b>핵심 아이디어</b>: 매주 넣을 필요 없음! 대단원별로 1개씩 작성</p>
-        <p>• <b>핵심질문</b>: 학생의 탐구를 유도하는 질문 (성취기준별 1개 권장)</p>
-        <p>• <b>수행지시어</b>: 학생이 도달할 행동 동사 (계산하다, 분석하다, 비교하다 등)</p>
+
+        <button
+          type="button"
+          onClick={handleAllAiButtonClick}
+          disabled={allLoading}
+          className={`w-full sm:w-auto px-3.5 py-1.5 sm:px-4 sm:py-2 rounded-lg font-bold text-xs shadow-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer shrink-0 ${
+            allLoading
+              ? "bg-purple-400 text-purple-50 cursor-not-allowed"
+              : "bg-purple-600 hover:bg-purple-700 text-white shadow-purple-600/20 active:scale-[0.98]"
+          }`}
+        >
+          {allLoading ? (
+            <>
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              <span>
+                AI 작성 중... {batchProgress ? `${batchProgress.current}/${batchProgress.total}주` : ""}
+              </span>
+            </>
+          ) : (
+            <>
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>✨ 전체 AI 작성</span>
+            </>
+          )}
+        </button>
       </div>
 
       {/* Top Action Bar */}
@@ -434,7 +1348,7 @@ ${sectionInstructions.join("\n")}
           <button
             type="button"
             onClick={recomputeAllHours}
-            className="text-[11px] text-blue-600 hover:underline font-medium"
+            className="text-[11px] text-blue-600 hover:underline font-medium cursor-pointer"
             title="기준학급 시간표에 맞춰 수업시수 재계산"
           >
             🔄 시수 재계산
@@ -443,24 +1357,8 @@ ${sectionInstructions.join("\n")}
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={handleAiDistributeStandards}
-            disabled={distributeLoading}
-            className="px-2.5 py-1 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-md text-xs font-bold transition-all shadow-xs flex items-center gap-1 cursor-pointer"
-          >
-            {distributeLoading ? (
-              <>
-                <Loader2 className="w-3 h-3 animate-spin" /> 배분 중...
-              </>
-            ) : (
-              <>
-                <Sparkles className="w-3 h-3" /> 성취기준 AI 자동 배분
-              </>
-            )}
-          </button>
-          <button
-            type="button"
             onClick={addScheduleRow}
-            className="px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded-md font-semibold flex items-center gap-1 shadow-xs"
+            className="px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded-md font-semibold flex items-center gap-1 shadow-xs cursor-pointer"
           >
             <Plus className="w-3.5 h-3.5" /> 주차 추가
           </button>
@@ -481,7 +1379,6 @@ ${sectionInstructions.join("\n")}
               const start = String(data[`perf${num}StartDate` as keyof PlanData] || "");
               const end = String(data[`perf${num}EndDate` as keyof PlanData] || "");
               const period = String(data[`perf${num}Period` as keyof PlanData] || "");
-              const range = formatDateRangeDisplay(start, end);
 
               return (
                 <div
@@ -506,229 +1403,310 @@ ${sectionInstructions.join("\n")}
 
       {/* Weekly Schedule List */}
       <div className="space-y-3">
-        {data.schedules.map((item, idx) => {
-          const selectedChecks = getSelectedChecks(idx, item.weekLabel);
-          const isDetailLoading = detailLoading[idx] || false;
-          const weekNum = getWeekNumber(idx, item.weekLabel);
-          const isOdd = weekNum % 2 === 1;
-          const overlappingPerfs = getOverlappingPerformancesForWeek(item.weekDate, data);
+        {(() => {
+          const { formativeWeekIndices, formativeNextPerfMap } = getScheduleAssessmentContext(data.schedules, data);
 
-          return (
-            <div
-              key={idx}
-              className={`p-3 border rounded-lg space-y-2.5 text-xs shadow-xs relative transition-all ${
-                overlappingPerfs.length > 0
-                  ? "border-emerald-300 bg-emerald-50/20 ring-1 ring-emerald-200"
-                  : "border-slate-200 bg-white"
-              }`}
-            >
-              <button
-                type="button"
-                onClick={() => removeScheduleRow(idx)}
-                className="absolute top-3 right-3 text-slate-400 hover:text-red-600 transition-colors"
-                title="주차 삭제"
+          return data.schedules.map((item, idx) => {
+            const isDetailLoading = detailLoading[idx] || false;
+            const weekNum = getWeekNumber(idx, item.weekLabel);
+            const isOdd = weekNum % 2 === 1;
+            const actualExamInfo = item.weekDate ? getOverlappingRegularExamForWeek(item.weekDate, data) : null;
+            const isActualExamWeek = actualExamInfo !== null;
+            const overlappingPerfs = !isActualExamWeek ? getOverlappingPerformancesForWeek(item.weekDate, data) : [];
+            const isFormativeWeek = !isActualExamWeek && formativeWeekIndices.has(idx);
+            const upcomingPerf = !isActualExamWeek ? formativeNextPerfMap.get(idx) : undefined;
+            const hoursNum = parseInt(item.hours, 10) || 0;
+
+            // Expand achievement standard code(s) to code + full curriculum text, or code-only for exam weeks
+            let expandedStd = "";
+            if (isActualExamWeek) {
+              expandedStd = formatStdCodesForDisplay(item.std || actualExamInfo.std || "");
+            } else {
+              expandedStd = getExpandedStdText(
+                item.std,
+                data.curriculumFullText,
+                data.curriculumSubjects,
+                data.curriculumSelectedOriginalIdx
+              ) || item.std || "";
+            }
+            const stdLineCount = expandedStd ? expandedStd.split("\n").length : 1;
+            const stdRows = Math.max(2, Math.min(8, stdLineCount > 1 ? stdLineCount + 1 : 2));
+
+            return (
+              <div
+                key={idx}
+                className={`p-3 border rounded-lg space-y-2.5 text-xs shadow-xs relative transition-all ${
+                  isActualExamWeek
+                    ? "border-amber-300 bg-amber-50/20 ring-1 ring-amber-200"
+                    : overlappingPerfs.length > 0
+                    ? "border-emerald-300 bg-emerald-50/20 ring-1 ring-emerald-200"
+                    : isFormativeWeek && upcomingPerf
+                    ? "border-blue-300 bg-blue-50/15 ring-1 ring-blue-100"
+                    : "border-slate-200 bg-white"
+                }`}
               >
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
+                <button
+                  type="button"
+                  onClick={() => removeScheduleRow(idx)}
+                  className="absolute top-3 right-3 text-slate-400 hover:text-red-600 transition-colors cursor-pointer"
+                  title="주차 삭제"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
 
-              {/* 수행평가 실시 주간 감지 알림 배너 */}
-              {overlappingPerfs.length > 0 && (
-                <div className="bg-emerald-100/90 border border-emerald-300/90 rounded-md px-2.5 py-1.5 flex items-center justify-between flex-wrap gap-2 text-emerald-950 pr-8">
-                  <div className="flex items-center gap-1.5 text-[11px] font-bold">
-                    <Calendar className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
-                    <span>🎯 수행평가 실시 주간:</span>
-                    <div className="flex flex-wrap gap-1">
-                      {overlappingPerfs.map((p) => (
-                        <span
-                          key={p.perfIndex}
-                          className="bg-white text-emerald-900 border border-emerald-300 px-1.5 py-0.2 rounded font-semibold text-[10px]"
-                        >
-                          수행평가 {p.perfIndex} ({p.name || `수행평가 ${p.perfIndex}`}){p.period ? ` · ${p.period}` : ""}
-                        </span>
-                      ))}
+                {/* 실제 정기시험 실시 주간 감지 알림 배너 */}
+                {isActualExamWeek && (
+                  <div className="bg-amber-100/90 border border-amber-300/90 rounded-md px-2.5 py-1.5 flex items-center justify-between flex-wrap gap-2 text-amber-950 pr-8">
+                    <div className="flex items-center gap-1.5 text-[11px] font-bold">
+                      <Calendar className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+                      <span>📝 실제 정기시험({actualExamInfo.type === "mid" ? "중간시험" : "기말시험"}) 실시 주간:</span>
+                      <span className="font-medium text-amber-900">
+                        성취기준 범위 코드만 표시 ([코드] 형태) · 수업 세부 방법 및 핵심 아이디어 생략 (-)
+                      </span>
+                    </div>
+                    <span className="bg-amber-200 text-amber-900 text-[10px] px-2 py-0.5 rounded font-bold border border-amber-300">
+                      {actualExamInfo.label}
+                    </span>
+                  </div>
+                )}
+
+                {/* 수행평가 실시 주간 감지 알림 배너 */}
+                {!isActualExamWeek && overlappingPerfs.length > 0 && (
+                  <div className="bg-emerald-100/90 border border-emerald-300/90 rounded-md px-2.5 py-1.5 flex items-center justify-between flex-wrap gap-2 text-emerald-950 pr-8">
+                    <div className="flex items-center gap-1.5 text-[11px] font-bold">
+                      <Calendar className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                      <span>🎯 수행평가 실시 주간:</span>
+                      <div className="flex flex-wrap gap-1">
+                        {overlappingPerfs.map((p) => (
+                          <span
+                            key={p.perfIndex}
+                            className="bg-white text-emerald-900 border border-emerald-300 px-1.5 py-0.2 rounded font-semibold text-[10px]"
+                          >
+                            수행평가 {p.perfIndex} ({p.name || `수행평가 ${p.perfIndex}`}){p.period ? ` · ${p.period}` : ""}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1">
+                      {overlappingPerfs.map((p) => {
+                        const perfTag = `수행평가 ${p.perfIndex}`;
+                        const isAlreadyTagged = item.type.includes(perfTag);
+                        return (
+                          <button
+                            key={p.perfIndex}
+                            type="button"
+                            onClick={() => {
+                              const currentType = item.type || "";
+                              if (!isAlreadyTagged) {
+                                const newType = currentType ? `${currentType}\n${perfTag}` : perfTag;
+                                updateScheduleItem(idx, "type", newType);
+                              }
+                              if (p.std && !item.std) {
+                                updateScheduleItem(idx, "std", p.std);
+                              }
+                              showToast(`${item.weekLabel}에 [수행평가 ${p.perfIndex}] 평가 유형이 설정되었습니다.`);
+                            }}
+                            className={`text-[10px] px-2 py-0.5 rounded font-bold border transition-all flex items-center gap-1 cursor-pointer ${
+                              isAlreadyTagged
+                                ? "bg-emerald-600 text-white border-emerald-700"
+                                : "bg-white hover:bg-emerald-50 text-emerald-800 border-emerald-400"
+                            }`}
+                          >
+                            {isAlreadyTagged ? (
+                              <>
+                                <CheckCircle2 className="w-3 h-3" /> 수행평가 {p.perfIndex} 적용됨
+                              </>
+                            ) : (
+                              <>+ 수행평가 {p.perfIndex} 유형 적용</>
+                            )}
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
+                )}
 
-                  <div className="flex items-center gap-1">
-                    {overlappingPerfs.map((p) => {
-                      const perfTag = `수행평가 ${p.perfIndex}`;
-                      const isAlreadyTagged = item.type.includes(perfTag);
-                      return (
-                        <button
-                          key={p.perfIndex}
-                          type="button"
-                          onClick={() => {
-                            const currentType = item.type || "";
-                            if (!isAlreadyTagged) {
-                              const newType = currentType ? `${currentType}, ${perfTag}` : perfTag;
-                              updateScheduleItem(idx, "type", newType);
-                            }
-                            if (p.std && !item.std) {
-                              updateScheduleItem(idx, "std", p.std);
-                            }
-                            showToast(`${item.weekLabel}에 [수행평가 ${p.perfIndex}] 평가 유형이 설정되었습니다.`);
-                          }}
-                          className={`text-[10px] px-2 py-0.5 rounded font-bold border transition-all flex items-center gap-1 cursor-pointer ${
-                            isAlreadyTagged
-                              ? "bg-emerald-600 text-white border-emerald-700"
-                              : "bg-white hover:bg-emerald-50 text-emerald-800 border-emerald-400"
-                          }`}
-                        >
-                          {isAlreadyTagged ? (
-                            <>
-                              <CheckCircle2 className="w-3 h-3" /> 수행평가 {p.perfIndex} 적용됨
-                            </>
-                          ) : (
-                            <>+ 수행평가 {p.perfIndex} 유형 적용</>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pr-6">
-                <div>
-                  <span className="text-[11px] text-slate-500 font-bold">주차</span>
-                  <input
-                    type="text"
-                    value={item.weekLabel}
-                    onChange={(e) => updateScheduleItem(idx, "weekLabel", e.target.value)}
-                    className="w-full p-1.5 border rounded font-bold text-center border-slate-300 focus:ring-1 focus:ring-blue-500 outline-none"
-                  />
-                </div>
-                <div>
-                  <span className="text-[11px] text-slate-500 font-bold">날짜</span>
-                  <input
-                    type="text"
-                    value={item.weekDate}
-                    onChange={(e) => updateScheduleItem(idx, "weekDate", e.target.value)}
-                    placeholder="예: 9.1. ~ 9.4."
-                    className="w-full p-1.5 border rounded border-slate-300 focus:ring-1 focus:ring-blue-500 outline-none font-medium"
-                  />
-                </div>
-                <div>
-                  <span className="text-[11px] text-slate-500 font-bold">
-                    시수 <span className="text-blue-600 font-normal">{item.weekDate ? "(자동계산)" : ""}</span>
-                  </span>
-                  <input
-                    type="text"
-                    value={item.hours}
-                    onChange={(e) => updateScheduleItem(idx, "hours", e.target.value)}
-                    className={`w-full p-1.5 border rounded border-slate-300 font-medium text-center ${
-                      item.weekDate ? "bg-slate-100 text-slate-600" : ""
-                    }`}
-                  />
-                  {item.cumulative !== undefined && (
-                    <span className="text-[10px] text-slate-400 block text-center">
-                      누계 {item.cumulative}시간
-                    </span>
-                  )}
-                </div>
-                <div>
-                  <span className="text-[11px] text-slate-500 font-bold">평가 유형</span>
-                  <input
-                    type="text"
-                    value={item.type}
-                    onChange={(e) => updateScheduleItem(idx, "type", e.target.value)}
-                    placeholder="형성평가/정기시험"
-                    className="w-full p-1.5 border rounded border-slate-300 focus:ring-1 focus:ring-blue-500 outline-none font-medium"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <span className="text-[11px] text-slate-500 font-bold">단원명(주제) 및 [핵심아이디어]</span>
-                <input
-                  type="text"
-                  value={item.topic}
-                  onChange={(e) => updateScheduleItem(idx, "topic", e.target.value)}
-                  placeholder="대단원 및 소단원 주제"
-                  className="w-full p-1.5 border rounded border-slate-300 focus:ring-1 focus:ring-blue-500 outline-none font-medium"
-                />
-              </div>
-
-              <div>
-                <div className="flex justify-between items-center mb-1">
-                  <span className="text-[11px] text-slate-500 font-bold">성취기준</span>
-                  <button
-                    type="button"
-                    onClick={() => onOpenStdModal(idx)}
-                    className="text-[10px] text-blue-600 hover:underline font-semibold flex items-center gap-1"
-                  >
-                    <BookOpen className="w-3 h-3" /> 성취기준 선택
-                  </button>
-                </div>
-                <textarea
-                  rows={2}
-                  value={item.std}
-                  readOnly
-                  placeholder="성취기준 선택 버튼을 눌러 지정하세요"
-                  className="w-full p-1.5 border rounded bg-slate-100 text-slate-700 cursor-not-allowed text-[11px] font-medium leading-snug"
-                />
-              </div>
-
-              <div>
-                <div className="flex justify-between items-center mb-1 flex-wrap gap-1">
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-[11px] text-slate-500 font-bold">평가와 연계한 수업 세부 방법</span>
-                    <span className={`text-[10px] px-1.5 py-0.2 rounded font-semibold ${
-                      isOdd ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800"
-                    }`}>
-                      {isOdd ? "홀수주: 아이디어+질문" : "짝수주: 개념+질문"}
+                {/* 형성평가 주간 감지 알림 배너 (수행평가 전주 자동 연동) */}
+                {!isActualExamWeek && isFormativeWeek && upcomingPerf && overlappingPerfs.length === 0 && (
+                  <div className="bg-blue-50/90 border border-blue-200 rounded-md px-2.5 py-1.5 flex items-center justify-between flex-wrap gap-2 text-blue-950 pr-8">
+                    <div className="flex items-center gap-1.5 text-[11px] font-bold">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                      <span>📝 형성평가 주간 (수행평가 전주 자동 연동):</span>
+                      <span className="font-medium text-blue-900">
+                        다음 주 [수행평가 {upcomingPerf.perfIndex}: {upcomingPerf.name}] 대비 학습 점검 및 형성평가
+                      </span>
+                    </div>
+                    <span className="bg-blue-100 text-blue-800 text-[10px] px-2 py-0.5 rounded font-semibold border border-blue-200">
+                      평가 유형 자동 반영됨
                     </span>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => handleRecommendDetail(idx)}
-                    disabled={isDetailLoading}
-                    className="px-2 py-0.5 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-md text-[10px] font-bold transition-all shadow-xs flex items-center gap-1 cursor-pointer"
-                    title="선택한 항목을 AI로 작성하며, 기존 항목은 유지하고 추가 반영합니다"
-                  >
-                    {isDetailLoading ? (
-                      <>
-                        <Loader2 className="w-2.5 h-2.5 animate-spin" /> 생성 중...
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="w-2.5 h-2.5" /> AI 활용하기
-                      </>
+                )}
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pr-6">
+                  <div>
+                    <span className="text-[11px] text-slate-500 font-bold">주차</span>
+                    <input
+                      type="text"
+                      value={item.weekLabel}
+                      onChange={(e) => updateScheduleItem(idx, "weekLabel", e.target.value)}
+                      className="w-full p-1.5 border rounded font-bold text-center border-slate-300 focus:ring-1 focus:ring-blue-500 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <span className="text-[11px] text-slate-500 font-bold">날짜</span>
+                    <input
+                      type="text"
+                      value={item.weekDate}
+                      onChange={(e) => updateScheduleItem(idx, "weekDate", e.target.value)}
+                      placeholder="예: 9.1. ~ 9.4."
+                      className="w-full p-1.5 border rounded border-slate-300 focus:ring-1 focus:ring-blue-500 outline-none font-medium"
+                    />
+                  </div>
+                  <div>
+                    <span className="text-[11px] text-slate-500 font-bold">
+                      시수 <span className="text-blue-600 font-normal">{item.weekDate ? "(자동계산)" : ""}</span>
+                    </span>
+                    <input
+                      type="text"
+                      value={item.hours}
+                      onChange={(e) => updateScheduleItem(idx, "hours", e.target.value)}
+                      className={`w-full p-1.5 border rounded border-slate-300 font-medium text-center ${
+                        item.weekDate ? "bg-slate-100 text-slate-600" : ""
+                      }`}
+                    />
+                    {item.cumulative !== undefined && (
+                      <span className="text-[10px] text-slate-400 block text-center">
+                        누계 {item.cumulative}시간
+                      </span>
                     )}
-                  </button>
+                  </div>
+                  <div>
+                    <span className="text-[11px] text-slate-500 font-bold">평가 유형</span>
+                    <textarea
+                      rows={item.type && item.type.includes("\n") ? 2 : 1}
+                      value={item.type}
+                      onChange={(e) => updateScheduleItem(idx, "type", e.target.value)}
+                      placeholder="형성평가/정기시험"
+                      className="w-full p-1.5 border rounded border-slate-300 focus:ring-1 focus:ring-blue-500 outline-none font-medium text-xs resize-none"
+                    />
+                  </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mb-1.5 p-1.5 bg-slate-50 rounded border border-slate-200">
-                  <span className="text-[10px] font-bold text-slate-500">작성 항목:</span>
-                  {[
-                    { key: "idea", label: "핵심 아이디어" },
-                    { key: "concept", label: "핵심개념" },
-                    { key: "question", label: "핵심질문" },
-                    { key: "verb", label: "수행지시어" },
-                  ].map((opt) => (
-                    <label key={opt.key} className="text-[10.5px] flex items-center gap-1 text-slate-600 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={selectedChecks.includes(opt.key)}
-                        onChange={() => toggleCheck(idx, opt.key, item.weekLabel)}
-                        className="rounded border-slate-300 text-purple-600 focus:ring-purple-500"
-                      />
-                      <span>{opt.label}</span>
-                    </label>
-                  ))}
+                <div>
+                  <div className="flex justify-between items-center mb-1">
+                    <span className="text-[11px] text-slate-700 font-bold">단원명(주제) [핵심 아이디어]</span>
+                    {isActualExamWeek ? (
+                      <span className="text-[10px] text-amber-700 font-semibold bg-amber-50 px-1.5 py-0.2 rounded border border-amber-200">
+                        정기시험 주간 (-)
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-purple-600 font-medium">교사 직접 수정 가능</span>
+                    )}
+                  </div>
+                  <textarea
+                    rows={isActualExamWeek ? 1 : 3}
+                    value={item.topic}
+                    onChange={(e) => updateScheduleItem(idx, "topic", e.target.value)}
+                    placeholder={isActualExamWeek ? "-" : `Ⅰ. 물질의 구조와 성질\n1. 화학 결합\n\n[핵심 아이디어]\n분자의 구조는 구성 원자의 종류와 결합 방식에 따라 달라지며 물질의 성질과 밀접하게 관련된다.`}
+                    className="w-full p-2 border rounded border-slate-300 focus:ring-1 focus:ring-blue-500 outline-none font-medium text-xs leading-relaxed bg-white"
+                  />
                 </div>
 
-                <textarea
-                  rows={4}
-                  value={item.detail}
-                  onChange={(e) => updateScheduleItem(idx, "detail", e.target.value)}
-                  placeholder={isOdd ? "[핵심 아이디어] ...\n[핵심질문] ..." : "[핵심개념] ...\n[핵심질문] ..."}
-                  className="w-full p-2 border rounded border-slate-300 text-[11px] leading-relaxed focus:ring-1 focus:ring-blue-500 outline-none bg-white"
-                />
+                <div>
+                  <div className="flex justify-between items-center mb-1">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[11px] text-slate-700 font-bold">성취기준</span>
+                      {isActualExamWeek && (
+                        <span className="text-[10px] text-amber-700 font-medium bg-amber-50 px-1.5 py-0.2 rounded border border-amber-200">
+                          정기시험 범위 코드만 표시
+                        </span>
+                      )}
+                    </div>
+                    {!isActualExamWeek && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenStdModal(idx)}
+                        className="text-[10px] text-blue-600 hover:underline font-semibold flex items-center gap-1 cursor-pointer"
+                      >
+                        <BookOpen className="w-3 h-3" /> 성취기준 선택
+                      </button>
+                    )}
+                  </div>
+                  <textarea
+                    rows={stdRows}
+                    value={expandedStd}
+                    readOnly
+                    placeholder={isActualExamWeek ? "-" : "성취기준 선택 버튼을 눌러 지정하세요"}
+                    className="w-full p-2 border rounded border-slate-300 bg-slate-50 text-slate-800 cursor-not-allowed text-xs font-medium leading-relaxed"
+                  />
+                </div>
+
+                <div>
+                  <div className="flex justify-between items-center mb-1 flex-wrap gap-1">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-[11px] text-slate-700 font-bold">평가와 연계한 수업 세부 방법</span>
+                      {isActualExamWeek ? (
+                        <span className="bg-amber-100 text-amber-800 text-[10px] px-2 py-0.5 rounded font-bold border border-amber-200">
+                          정기시험({actualExamInfo.type === "mid" ? "중간" : "기말"}) 주간: - 적용
+                        </span>
+                      ) : overlappingPerfs.length > 0 ? (
+                        <span className="bg-purple-100 text-purple-800 text-[10px] px-2 py-0.5 rounded font-bold border border-purple-200">
+                          {overlappingPerfs.map((p) => `■ 수행평가 ${p.perfIndex}`).join(" & ")} 실시 주차 (자동 연동)
+                        </span>
+                      ) : isFormativeWeek && upcomingPerf ? (
+                        <span className="bg-blue-100 text-blue-800 text-[10px] px-2 py-0.5 rounded font-bold border border-blue-200">
+                          형성평가 주차 (수행평가 {upcomingPerf.perfIndex} 전주 연동)
+                        </span>
+                      ) : (
+                        <span className={`text-[10px] px-1.5 py-0.2 rounded font-semibold ${
+                          isOdd ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800"
+                        }`}>
+                          {isOdd ? "홀수주: 핵심질문" : "짝수주: 핵심개념+핵심질문"}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Single Week Re-generate button */}
+                    <button
+                      type="button"
+                      onClick={() => handleRegenerateSingleWeek(idx)}
+                      disabled={isDetailLoading || allLoading || (!isActualExamWeek && hoursNum <= 0)}
+                      className="px-2 py-0.8 bg-slate-100 hover:bg-purple-50 text-slate-700 hover:text-purple-700 border border-slate-300 hover:border-purple-200 rounded text-[10px] font-semibold transition-all flex items-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                      title={isActualExamWeek ? "정기시험 주차 규칙(-)을 다시 적용합니다" : "해당 주차만 AI로 다시 생성합니다"}
+                    >
+                      {isDetailLoading ? (
+                        <>
+                          <Loader2 className="w-2.5 h-2.5 animate-spin text-purple-600" /> 생성 중...
+                        </>
+                      ) : (
+                        <>
+                          <RotateCw className="w-2.5 h-2.5" /> 다시 생성
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  <textarea
+                    rows={isActualExamWeek ? 1 : 4}
+                    value={item.detail}
+                    onChange={(e) => updateScheduleItem(idx, "detail", e.target.value)}
+                    placeholder={
+                      isActualExamWeek
+                        ? "-"
+                        : overlappingPerfs.length > 0
+                        ? `[핵심질문]\n수행 과제 탐구 질문\n\n[수행평가 내용]\n수행평가 과제 요약\n\n[수행지시어]\n모델링하다, 분석하다, 설명하다, 추론하다`
+                        : isFormativeWeek
+                        ? `[핵심질문]\n수행평가 대비 핵심 질문\n\n[수행지시어]\n비교하다, 유추하다, 적용하다, 확인하다`
+                        : `[핵심질문]\n탐구 유도 질문\n\n[핵심개념]\n주요 개념 키워드 (짝수주)`
+                    }
+                    className="w-full p-2 border rounded border-slate-300 text-[11px] leading-relaxed focus:ring-1 focus:ring-blue-500 outline-none bg-white font-medium"
+                  />
+                </div>
               </div>
-            </div>
-          );
-        })}
+            );
+          });
+        })()}
       </div>
     </div>
   );

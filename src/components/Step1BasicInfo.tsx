@@ -10,7 +10,9 @@ import {
   processHwpFile,
   findCurriculumSubjects,
   extractGoalParagraph,
+  extractAchievementLevelsByStandard,
 } from "../utils/hwpParser";
+import { isThreeTier } from "../utils/achievementUtils";
 import { Plus, Sparkles, X, Paperclip, CheckCircle2, AlertCircle } from "lucide-react";
 
 interface Step1BasicInfoProps {
@@ -41,6 +43,19 @@ export const Step1BasicInfo: React.FC<Step1BasicInfoProps> = ({
         .forEach((label) => subjectOptions.push({ label, originalIdx: i }));
     });
   }
+
+  const selectedOptionIndex = subjectOptions.findIndex((o) => {
+    if (data.curriculumSelectedOriginalIdx != null && data.subjectName) {
+      return o.originalIdx === data.curriculumSelectedOriginalIdx && o.label === data.subjectName;
+    }
+    if (data.curriculumSelectedOriginalIdx != null) {
+      return o.originalIdx === data.curriculumSelectedOriginalIdx;
+    }
+    if (data.subjectName) {
+      return o.label === data.subjectName;
+    }
+    return false;
+  });
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files && e.target.files[0];
@@ -89,7 +104,57 @@ export const Step1BasicInfo: React.FC<Step1BasicInfoProps> = ({
 
     const subjectName = option.label;
     const originalIdx = option.originalIdx;
+    const isDifferentSubject =
+      data.curriculumSelectedOriginalIdx !== originalIdx || data.subjectName !== subjectName;
     const para = extractGoalParagraph(data.curriculumFullText, data.curriculumSubjects, originalIdx);
+
+    // If subject changes, check cache or re-extract achievement levels
+    let reExtractedAchieve: {
+      achieveA: string;
+      achieveB: string;
+      achieveC: string;
+      achieveD: string;
+      achieveE: string;
+    } = { achieveA: "", achieveB: "", achieveC: "", achieveD: "", achieveE: "" };
+
+    let updatedCache = data.achievementLevelsCache;
+
+    if (isDifferentSubject) {
+      if (data.achievementLevelsCache && data.achievementLevelsCache[subjectName]) {
+        const cached = data.achievementLevelsCache[subjectName];
+        reExtractedAchieve = {
+          achieveA: cached.achieveA,
+          achieveB: cached.achieveB,
+          achieveC: cached.achieveC,
+          achieveD: cached.achieveD,
+          achieveE: cached.achieveE,
+        };
+      } else if (data.achievementLevelsFullText) {
+        const is3Tier = isThreeTier(data.gradeType);
+        const extracted = extractAchievementLevelsByStandard(
+          data.achievementLevelsFullText,
+          subjectName,
+          is3Tier
+        );
+        if (extracted.achieveA || extracted.achieveB || extracted.achieveC) {
+          reExtractedAchieve = {
+            achieveA: extracted.achieveA,
+            achieveB: extracted.achieveB,
+            achieveC: extracted.achieveC,
+            achieveD: extracted.achieveD,
+            achieveE: extracted.achieveE,
+          };
+          updatedCache = {
+            ...(data.achievementLevelsCache || {}),
+            [subjectName]: {
+              ...reExtractedAchieve,
+              totalStandards: extracted.totalStandards,
+              extractedStandards: extracted.extractedStandards,
+            },
+          };
+        }
+      }
+    }
 
     onChange((prev) => {
       const newPolicies = [...prev.policyItems];
@@ -101,6 +166,24 @@ export const Step1BasicInfo: React.FC<Step1BasicInfoProps> = ({
         subjectName,
         curriculumSelectedOriginalIdx: originalIdx,
         policyItems: newPolicies,
+        ...(isDifferentSubject
+          ? {
+              midStd: "",
+              finalStd: "",
+              perf1Std: "",
+              perf2Std: "",
+              perf3Std: "",
+              perf4Std: "",
+              schedules: prev.schedules.map((s) => ({ ...s, topic: "", std: "", detail: "" })),
+              achieveA: reExtractedAchieve.achieveA,
+              achieveB: reExtractedAchieve.achieveB,
+              achieveC: reExtractedAchieve.achieveC,
+              achieveD: reExtractedAchieve.achieveD,
+              achieveE: reExtractedAchieve.achieveE,
+              achievementLevelsCache: updatedCache || prev.achievementLevelsCache,
+              minCompetency: "",
+            }
+          : {}),
       };
     });
 
@@ -233,17 +316,13 @@ export const Step1BasicInfo: React.FC<Step1BasicInfoProps> = ({
           <div className="pt-1">
             <label className="block text-xs font-semibold text-slate-700 mb-1">인식된 과목 선택</label>
             <select
+              value={selectedOptionIndex >= 0 ? String(selectedOptionIndex) : ""}
               onChange={(e) => handleSubjectSelect(e.target.value)}
-              defaultValue={
-                data.curriculumSelectedOriginalIdx != null
-                  ? subjectOptions.findIndex((o) => o.originalIdx === data.curriculumSelectedOriginalIdx)
-                  : ""
-              }
-              className="w-full text-xs p-2 border rounded-md border-slate-300 bg-white shadow-sm"
+              className="w-full text-xs p-2 border rounded-md border-slate-300 bg-white shadow-sm focus:ring-2 focus:ring-blue-500 outline-none font-medium text-slate-800"
             >
               <option value="">-- 과목을 선택하세요 --</option>
               {subjectOptions.map((opt, i) => (
-                <option key={i} value={i}>
+                <option key={i} value={String(i)}>
                   {opt.label}
                 </option>
               ))}
@@ -258,9 +337,68 @@ export const Step1BasicInfo: React.FC<Step1BasicInfoProps> = ({
           <input
             type="text"
             value={data.subjectName}
-            readOnly
-            title="상단 「인식된 과목 선택」에서 선택한 과목명이 자동으로 표시됩니다."
-            className="w-full text-xs p-2 border rounded-md border-slate-300 bg-slate-100 text-slate-700 cursor-not-allowed font-medium"
+            onChange={(e) => {
+              const newName = e.target.value;
+              const matchedOpt = subjectOptions.find((o) => o.label === newName.trim());
+              const isDiff = newName.trim() !== data.subjectName.trim();
+              let reExtractedAchieve = { achieveA: "", achieveB: "", achieveC: "", achieveD: "", achieveE: "" };
+              let updatedCache = data.achievementLevelsCache;
+              if (isDiff && newName.trim()) {
+                if (data.achievementLevelsCache && data.achievementLevelsCache[newName.trim()]) {
+                  const cached = data.achievementLevelsCache[newName.trim()];
+                  reExtractedAchieve = {
+                    achieveA: cached.achieveA,
+                    achieveB: cached.achieveB,
+                    achieveC: cached.achieveC,
+                    achieveD: cached.achieveD,
+                    achieveE: cached.achieveE,
+                  };
+                } else if (data.achievementLevelsFullText) {
+                  const is3Tier = isThreeTier(data.gradeType);
+                  const extracted = extractAchievementLevelsByStandard(
+                    data.achievementLevelsFullText,
+                    newName.trim(),
+                    is3Tier
+                  );
+                  if (extracted.subjectFound && (extracted.achieveA || extracted.achieveB || extracted.achieveC)) {
+                    reExtractedAchieve = {
+                      achieveA: extracted.achieveA,
+                      achieveB: extracted.achieveB,
+                      achieveC: extracted.achieveC,
+                      achieveD: extracted.achieveD,
+                      achieveE: extracted.achieveE,
+                    };
+                    updatedCache = {
+                      ...(data.achievementLevelsCache || {}),
+                      [newName.trim()]: {
+                        ...reExtractedAchieve,
+                        totalStandards: extracted.totalStandards,
+                        extractedStandards: extracted.extractedStandards,
+                      },
+                    };
+                  }
+                }
+              }
+
+              onChange((prev) => ({
+                ...prev,
+                subjectName: newName,
+                curriculumSelectedOriginalIdx: matchedOpt ? matchedOpt.originalIdx : prev.curriculumSelectedOriginalIdx,
+                ...(isDiff
+                  ? {
+                      achieveA: reExtractedAchieve.achieveA,
+                      achieveB: reExtractedAchieve.achieveB,
+                      achieveC: reExtractedAchieve.achieveC,
+                      achieveD: reExtractedAchieve.achieveD,
+                      achieveE: reExtractedAchieve.achieveE,
+                      achievementLevelsCache: updatedCache || prev.achievementLevelsCache,
+                    }
+                  : {}),
+              }));
+            }}
+            placeholder="과목명을 입력하거나 상단 교육과정에서 선택하세요"
+            title="상단 「인식된 과목 선택」에서 선택한 과목명이 자동으로 연동됩니다."
+            className="w-full text-xs p-2 border rounded-md border-slate-300 bg-white text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none font-semibold shadow-xs"
           />
         </div>
         <div>

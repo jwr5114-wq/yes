@@ -1,17 +1,18 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { PlanData, Project } from "./types";
-import { DEFAULT_CHEM_DATA, FIXED_SCHOOL_NAME, FIXED_YEAR_SEMESTER } from "./constants";
+import { EMPTY_PLAN_DATA, DEFAULT_CHEM_DATA, FIXED_SCHOOL_NAME, FIXED_YEAR_SEMESTER } from "./constants";
 import { Header } from "./components/Header";
 import { StepTabs } from "./components/StepTabs";
 import { Step1BasicInfo } from "./components/Step1BasicInfo";
 import { Step2AssessmentOverview } from "./components/Step2AssessmentOverview";
 import { Step3PerformanceDetail } from "./components/Step3PerformanceDetail";
-import { Step4WeeklySchedule } from "./components/Step4WeeklySchedule";
+import { Step4WeeklySchedule, syncScheduleWithPerformances } from "./components/Step4WeeklySchedule";
 import { Step5AchievementLevels } from "./components/Step5AchievementLevels";
 import { DocumentPreview } from "./components/DocumentPreview";
 import { ProjectsModal } from "./components/ProjectsModal";
 import { VersionsModal } from "./components/VersionsModal";
 import { StdSelectModal } from "./components/StdSelectModal";
+import { JsonExportModal } from "./components/JsonExportModal";
 import { CustomDialog, DialogOptions } from "./components/CustomDialog";
 import { ArrowLeft, ArrowRight, Check } from "lucide-react";
 
@@ -24,7 +25,7 @@ declare global {
 export default function App() {
   const [projectsMap, setProjectsMap] = useState<Record<string, Project>>({});
   const [activeProjectId, setActiveProjectId] = useState<string>("default-project-1");
-  const [appData, setAppData] = useState<PlanData>(() => JSON.parse(JSON.stringify(DEFAULT_CHEM_DATA)));
+  const [appData, setAppData] = useState<PlanData>(() => JSON.parse(JSON.stringify(EMPTY_PLAN_DATA)));
   const [currentStep, setCurrentStep] = useState<number>(1);
   const [viewMode, setViewMode] = useState<"step" | "full">("step");
   const [saveState, setSaveState] = useState<"saved" | "saving" | "dirty">("saved");
@@ -32,6 +33,7 @@ export default function App() {
   // Modals state
   const [isProjectsModalOpen, setIsProjectsModalOpen] = useState(false);
   const [isVersionsModalOpen, setIsVersionsModalOpen] = useState(false);
+  const [isJsonModalOpen, setIsJsonModalOpen] = useState(false);
   const [stdModalTarget, setStdModalTarget] = useState<"mid" | "final" | "perf1" | "perf2" | "perf3" | "perf4" | number | null>(null);
   const [dialog, setDialog] = useState<DialogOptions | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -71,9 +73,9 @@ export default function App() {
       if (Object.keys(map).length === 0) {
         const defaultProj: Project = {
           id: "default-project-1",
-          name: "2026학년도 2학기 화학 평가계획서",
+          name: "2026학년도 2학기 신규 교과 평가계획서",
           updatedAt: new Date().toISOString(),
-          data: JSON.parse(JSON.stringify(DEFAULT_CHEM_DATA)),
+          data: JSON.parse(JSON.stringify(EMPTY_PLAN_DATA)),
           snapshots: [],
         };
         map["default-project-1"] = defaultProj;
@@ -91,7 +93,7 @@ export default function App() {
     }
   }, []);
 
-  // Compute calculated exam ratios whenever scores or total ratios change
+  // Compute calculated exam ratios and auto-sync assessment types whenever standards/ratios change
   const normalizeExamRatios = (data: PlanData): PlanData => {
     const updated = { ...data };
 
@@ -117,6 +119,14 @@ export default function App() {
       updated.finalSelectRatio = 0;
       updated.finalShortRatio = 0;
       updated.finalEssayRatio = 0;
+    }
+
+    // Auto-sync schedule types with exam standards & performance assessments
+    if (updated.schedules && updated.schedules.length > 0) {
+      const { schedules: syncedSchedules, changed } = syncScheduleWithPerformances(updated.schedules, updated);
+      if (changed) {
+        updated.schedules = syncedSchedules;
+      }
     }
 
     return updated;
@@ -207,10 +217,10 @@ export default function App() {
         if (!name || !name.trim()) return;
         const newId = `proj-${Date.now()}`;
         const freshData: PlanData = {
-          ...JSON.parse(JSON.stringify(DEFAULT_CHEM_DATA)),
+          ...JSON.parse(JSON.stringify(EMPTY_PLAN_DATA)),
           yearSemester: FIXED_YEAR_SEMESTER,
           schoolName: FIXED_SCHOOL_NAME,
-          subjectName: "신규과목",
+          subjectName: "",
           gradeType: "5단계(5등급)",
         };
 
@@ -533,6 +543,14 @@ export default function App() {
         onConfirm={handleConfirmStdSelect}
       />
 
+      {/* Structured HWP JSON Export Modal */}
+      <JsonExportModal
+        isOpen={isJsonModalOpen}
+        onClose={() => setIsJsonModalOpen(false)}
+        data={appData}
+        showToast={showToast}
+      />
+
       {/* Top Header */}
       <Header
         currentProjectName={currentProjectName}
@@ -542,6 +560,8 @@ export default function App() {
         onManualSave={handleManualSave}
         onLoadSample={handleLoadSampleChemistry}
         onDownloadPdf={handleDownloadPdf}
+        onOpenJsonExport={() => setIsJsonModalOpen(true)}
+        onGoToHwpStep={() => setCurrentStep(5)}
         isDownloadingPdf={isDownloadingPdf}
       />
 
@@ -575,7 +595,12 @@ export default function App() {
               />
             )}
             {currentStep === 5 && (
-              <Step5AchievementLevels data={appData} onChange={handleDataChange} />
+              <Step5AchievementLevels
+                data={appData}
+                onChange={handleDataChange}
+                showToast={showToast}
+                setDialog={setDialog}
+              />
             )}
           </div>
 

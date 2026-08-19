@@ -2,8 +2,8 @@ import React from "react";
 import { PlanData, RubricCriterion } from "../types";
 import { FIXED_SCHOOL_NAME, FIXED_YEAR_SEMESTER, getKoreanPrefix } from "../constants";
 import { formatStdCodesForDisplay, getExpandedStdText } from "../utils/hwpParser";
-import { formatDateRangeDisplay } from "../utils/dateUtils";
-import { getAchievementTable } from "../utils/achievementUtils";
+import { formatDateRangeDisplay, getOverlappingRegularExamForWeek } from "../utils/dateUtils";
+import { getAchievementTable, isFirstGrade, isThreeTier } from "../utils/achievementUtils";
 
 interface DocumentPreviewProps {
   data: PlanData;
@@ -18,7 +18,8 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
   viewMode,
   onViewModeChange,
 }) => {
-  const is3Tier = data.gradeType === "3단계";
+  const is1stGrade = isFirstGrade(data.grade);
+  const is3Tier = isThreeTier(data.gradeType);
   const isShowSection = (secNum: number) => {
     if (viewMode === "full") return true;
     return currentStep === secNum;
@@ -398,7 +399,7 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
                     <th style={{ width: "24%" }}>단원명(주제)<br />[핵심 아이디어]</th>
                     <th style={{ width: "16%" }}>성취기준</th>
                     <th style={{ width: "12%" }}>평가 유형</th>
-                    <th style={{ width: "25%" }}>수업 세부 방법</th>
+                    <th style={{ width: "25%" }}>평가와 연계한<br />수업 세부 방법</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -425,7 +426,23 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
                         )}
                       </td>
                       <td className="left text-[7.5pt] font-semibold whitespace-pre-line">{item.topic}</td>
-                      <td className="left text-[7.5pt] whitespace-pre-line">{item.std}</td>
+                      <td className="left text-[7.5pt] whitespace-pre-line leading-relaxed">
+                        {(() => {
+                          const examInfo = item.weekDate ? getOverlappingRegularExamForWeek(item.weekDate, data) : null;
+                          if (examInfo) {
+                            const examStd = examInfo.type === "mid" ? data.midStd : data.finalStd;
+                            return formatStdCodesForDisplay(item.std || examStd || examInfo.std || "");
+                          }
+                          return (
+                            getExpandedStdText(
+                              item.std,
+                              data.curriculumFullText,
+                              data.curriculumSubjects,
+                              data.curriculumSelectedOriginalIdx
+                            ) || item.std || ""
+                          );
+                        })()}
+                      </td>
                       <td className="text-[7.5pt] font-medium whitespace-pre-line">{item.type}</td>
                       <td className="left text-[7.5pt] whitespace-pre-line leading-relaxed">{item.detail}</td>
                     </tr>
@@ -437,46 +454,80 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
 
           {/* SECTION 5: 학기 단위 성취수준 */}
           {isShowSection(5) && (
-            <div id="pv-step-5" className="pv-section space-y-3">
+            <div id="pv-step-5" className="pv-section space-y-2">
               <div className="font-bold text-sm text-slate-900 border-b border-slate-300 pb-1">
                 3. [<span>{data.subjectName || "교과"}</span>]과 학기 단위 성취수준
+              </div>
+
+              <div className="font-bold text-xs text-slate-800 mt-1">
+                1. 학기 단위 성취수준
+              </div>
+
+              {/* Guidance notes matching the official HWP template */}
+              <div className="text-[7.5pt] text-blue-700 space-y-0.5 my-1">
+                {is1stGrade && !is3Tier && (
+                  <>
+                    <div>※ 학기 단위의 성취수준은 한 학기 전체 성취기준을 포괄하는 수준에서 전반적인 이해와 수행 특성을 진술함.</div>
+                    <div>※ 1학년 공통과목은 최소능력수행특성을 포함하여 진술</div>
+                  </>
+                )}
+                {!is1stGrade && !is3Tier && (
+                  <div>※ 1학년 공통과목 외 과목은 학기단위 성취수준 진술(5단계)</div>
+                )}
+                {is3Tier && (
+                  <div>※ 1학년 공통과목 외 과목은 학기단위 성취수준 진술(3단계)</div>
+                )}
               </div>
 
               <table className="doc-table">
                 <thead>
                   <tr>
                     <th style={{ width: "12%" }}>성취수준</th>
-                    <th style={{ width: "70%" }}>학기 단위 성취수준 기술</th>
+                    <th style={{ width: "70%" }}>성취수준 기술</th>
                     <th style={{ width: "18%" }}>성취율</th>
                   </tr>
                 </thead>
                 <tbody>
                   <tr>
-                    <td className="font-bold text-blue-700">A</td>
-                    <td className="left text-[7.5pt] whitespace-pre-line leading-relaxed">{data.achieveA}</td>
-                    <td>{is3Tier ? "80% 이상" : "90% 이상"}</td>
+                    <td className="font-bold text-blue-700 text-center">A</td>
+                    <td className="left text-[7.5pt] whitespace-pre-line leading-relaxed">{data.achieveA || "-"}</td>
+                    <td className="text-center">{is3Tier ? "80%이상" : "90%이상"}</td>
                   </tr>
                   <tr>
-                    <td className="font-bold text-slate-800">B</td>
-                    <td className="left text-[7.5pt] whitespace-pre-line leading-relaxed">{data.achieveB}</td>
-                    <td>{is3Tier ? "60% 이상 ~ 80% 미만" : "80% 이상 ~ 90% 미만"}</td>
+                    <td className="font-bold text-slate-800 text-center">B</td>
+                    <td className="left text-[7.5pt] whitespace-pre-line leading-relaxed">{data.achieveB || "-"}</td>
+                    <td className="text-center">{is3Tier ? "60%이상 ~ 80%미만" : "80%이상 ~ 90%미만"}</td>
                   </tr>
                   <tr>
-                    <td className="font-bold text-slate-800">C</td>
-                    <td className="left text-[7.5pt] whitespace-pre-line leading-relaxed">{data.achieveC}</td>
-                    <td>{is3Tier ? "60% 미만" : "70% 이상 ~ 80% 미만"}</td>
+                    <td className="font-bold text-slate-800 text-center">C</td>
+                    <td className="left text-[7.5pt] whitespace-pre-line leading-relaxed">{data.achieveC || "-"}</td>
+                    <td className="text-center">{is3Tier ? "60%미만" : "70%이상 ~ 80%미만"}</td>
                   </tr>
                   {!is3Tier && (
                     <>
                       <tr>
-                        <td className="font-bold text-slate-800">D</td>
-                        <td className="left text-[7.5pt] whitespace-pre-line leading-relaxed">{data.achieveD}</td>
-                        <td>60% 이상 ~ 70% 미만</td>
+                        <td className="font-bold text-slate-800 text-center">D</td>
+                        <td className="left text-[7.5pt] whitespace-pre-line leading-relaxed">{data.achieveD || "-"}</td>
+                        <td className="text-center">60%이상 ~ 70%미만</td>
                       </tr>
                       <tr>
-                        <td className="font-bold text-slate-800">E</td>
-                        <td className="left text-[7.5pt] whitespace-pre-line leading-relaxed">{data.achieveE}</td>
-                        <td>60% 미만</td>
+                        <td className="font-bold text-slate-800 text-center">E</td>
+                        <td className="left text-[7.5pt] whitespace-pre-line leading-relaxed">{data.achieveE || "-"}</td>
+                        <td className="text-center">{is1stGrade ? "40%이상 ~ 60%미만" : "60%미만"}</td>
+                      </tr>
+                    </>
+                  )}
+                  {is1stGrade && !is3Tier && (
+                    <>
+                      <tr>
+                        <th colSpan={3} className="font-bold text-center bg-slate-100 text-[8pt] py-1">
+                          최소능력수행특성
+                        </th>
+                      </tr>
+                      <tr>
+                        <td colSpan={3} className="left text-[7.5pt] whitespace-pre-line leading-relaxed py-2">
+                          {data.minCompetency || "-"}
+                        </td>
                       </tr>
                     </>
                   )}

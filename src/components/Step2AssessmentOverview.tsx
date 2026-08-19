@@ -183,15 +183,59 @@ export const Step2AssessmentOverview: React.FC<Step2AssessmentOverviewProps> = (
                 </div>
               </div>
             </div>
-            <div>
-              <label className="block text-[11px] font-semibold text-slate-700 mb-1">평가 시기</label>
-              <input
-                type="text"
-                value={data.midTime}
-                onChange={(e) => onChange((prev) => ({ ...prev, midTime: e.target.value }))}
-                className="w-full p-2 border rounded-md border-slate-300 focus:ring-2 focus:ring-blue-500 outline-none"
-              />
+            {/* 중간시험 평가 실시일 및 시기 */}
+            <div className="p-3 bg-blue-50/50 rounded-lg border border-blue-200/80 space-y-1.5">
+              <div className="flex items-center gap-1.5 font-bold text-slate-700 text-xs">
+                <Calendar className="w-3.5 h-3.5 text-blue-600" />
+                <span>평가 실시일 (실제 시험 기간)</span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <input
+                  type="date"
+                  value={data.midStartDate || ""}
+                  onChange={(e) => {
+                    const newStart = e.target.value;
+                    const nextEnd = (!data.midEndDate || data.midEndDate < newStart) ? newStart : data.midEndDate;
+                    const newPeriod = calcPeriodFromDates(newStart, nextEnd);
+                    const newDisplay = formatDateRangeDisplay(newStart, nextEnd);
+                    onChange((prev) => ({
+                      ...prev,
+                      midStartDate: newStart,
+                      midEndDate: nextEnd,
+                      midPeriod: newPeriod,
+                      midTime: newDisplay || prev.midTime,
+                    }));
+                  }}
+                  className="flex-1 p-2 text-xs bg-white border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none font-medium text-slate-800 shadow-xs"
+                />
+                <span className="text-slate-400 font-bold text-sm">~</span>
+                <input
+                  type="date"
+                  value={data.midEndDate || ""}
+                  min={data.midStartDate || undefined}
+                  onChange={(e) => {
+                    const newEnd = e.target.value;
+                    const nextStart = (!data.midStartDate || data.midStartDate > newEnd) ? newEnd : data.midStartDate;
+                    const newPeriod = calcPeriodFromDates(nextStart, newEnd);
+                    const newDisplay = formatDateRangeDisplay(nextStart, newEnd);
+                    onChange((prev) => ({
+                      ...prev,
+                      midStartDate: nextStart,
+                      midEndDate: newEnd,
+                      midPeriod: newPeriod,
+                      midTime: newDisplay || prev.midTime,
+                    }));
+                  }}
+                  className="flex-1 p-2 text-xs bg-white border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none font-medium text-slate-800 shadow-xs"
+                />
+              </div>
+
+              <div className="text-[11px] text-slate-500 font-medium pl-0.5">
+                평가 시기: <span className="text-blue-700 font-semibold">{data.midPeriod || data.midTime || "-"}</span>
+              </div>
             </div>
+
             <div>
               <div className="flex justify-between items-center mb-1">
                 <label className="block text-[11px] font-semibold text-slate-700">관련 교육과정 성취기준</label>
@@ -310,15 +354,59 @@ export const Step2AssessmentOverview: React.FC<Step2AssessmentOverviewProps> = (
                 </div>
               </div>
             </div>
-            <div>
-              <label className="block text-[11px] font-semibold text-slate-700 mb-1">평가 시기</label>
-              <input
-                type="text"
-                value={data.finalTime}
-                onChange={(e) => onChange((prev) => ({ ...prev, finalTime: e.target.value }))}
-                className="w-full p-2 border rounded-md border-slate-300 focus:ring-2 focus:ring-blue-500 outline-none"
-              />
+            {/* 기말시험 평가 실시일 및 시기 */}
+            <div className="p-3 bg-blue-50/50 rounded-lg border border-blue-200/80 space-y-1.5">
+              <div className="flex items-center gap-1.5 font-bold text-slate-700 text-xs">
+                <Calendar className="w-3.5 h-3.5 text-blue-600" />
+                <span>평가 실시일 (실제 시험 기간)</span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <input
+                  type="date"
+                  value={data.finalStartDate || ""}
+                  onChange={(e) => {
+                    const newStart = e.target.value;
+                    const nextEnd = (!data.finalEndDate || data.finalEndDate < newStart) ? newStart : data.finalEndDate;
+                    const newPeriod = calcPeriodFromDates(newStart, nextEnd);
+                    const newDisplay = formatDateRangeDisplay(newStart, nextEnd);
+                    onChange((prev) => ({
+                      ...prev,
+                      finalStartDate: newStart,
+                      finalEndDate: nextEnd,
+                      finalPeriod: newPeriod,
+                      finalTime: newDisplay || prev.finalTime,
+                    }));
+                  }}
+                  className="flex-1 p-2 text-xs bg-white border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none font-medium text-slate-800 shadow-xs"
+                />
+                <span className="text-slate-400 font-bold text-sm">~</span>
+                <input
+                  type="date"
+                  value={data.finalEndDate || ""}
+                  min={data.finalStartDate || undefined}
+                  onChange={(e) => {
+                    const newEnd = e.target.value;
+                    const nextStart = (!data.finalStartDate || data.finalStartDate > newEnd) ? newEnd : data.finalStartDate;
+                    const newPeriod = calcPeriodFromDates(nextStart, newEnd);
+                    const newDisplay = formatDateRangeDisplay(nextStart, newEnd);
+                    onChange((prev) => ({
+                      ...prev,
+                      finalStartDate: nextStart,
+                      finalEndDate: newEnd,
+                      finalPeriod: newPeriod,
+                      finalTime: newDisplay || prev.finalTime,
+                    }));
+                  }}
+                  className="flex-1 p-2 text-xs bg-white border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none font-medium text-slate-800 shadow-xs"
+                />
+              </div>
+
+              <div className="text-[11px] text-slate-500 font-medium pl-0.5">
+                평가 시기: <span className="text-blue-700 font-semibold">{data.finalPeriod || data.finalTime || "-"}</span>
+              </div>
             </div>
+
             <div>
               <div className="flex justify-between items-center mb-1">
                 <label className="block text-[11px] font-semibold text-slate-700">관련 교육과정 성취기준</label>
@@ -414,7 +502,6 @@ export const Step2AssessmentOverview: React.FC<Step2AssessmentOverviewProps> = (
           const startDate = String(data[startKey] || "");
           const endDate = String(data[endKey] || "");
           const period = String(data[periodKey] || "");
-          const rangeDisplay = formatDateRangeDisplay(startDate, endDate);
 
           const handleStartDateChange = (newStart: string) => {
             const nextEnd = (!endDate || endDate < newStart) ? newStart : endDate;
@@ -434,16 +521,6 @@ export const Step2AssessmentOverview: React.FC<Step2AssessmentOverviewProps> = (
               ...prev,
               [startKey]: nextStart,
               [endKey]: newEnd,
-              [periodKey]: newPeriod,
-            }));
-          };
-
-          const handleSetSingleDay = () => {
-            if (!startDate) return;
-            const newPeriod = calcPeriodFromDates(startDate, startDate);
-            onChange((prev) => ({
-              ...prev,
-              [endKey]: startDate,
               [periodKey]: newPeriod,
             }));
           };
@@ -501,76 +578,32 @@ export const Step2AssessmentOverview: React.FC<Step2AssessmentOverviewProps> = (
                 </div>
               </div>
 
-              {/* 평가 실시일 및 평가 시기 입력 영역 */}
-              <div className="p-3 bg-emerald-50/60 rounded-lg border border-emerald-200/80 space-y-2.5">
-                <div className="flex items-center justify-between flex-wrap gap-2">
-                  <div className="flex items-center gap-1.5 font-bold text-emerald-950 text-[11px]">
-                    <Calendar className="w-3.5 h-3.5 text-emerald-700" />
-                    <span>평가 실시일 (실제 날짜 선택)</span>
-                  </div>
-                  {rangeDisplay && (
-                    <div className="flex items-center gap-1.5">
-                      <span className="px-2 py-0.5 bg-white border border-emerald-300 text-emerald-800 rounded font-semibold text-[10px]">
-                        {rangeDisplay}
-                      </span>
-                      {startDate && endDate && startDate !== endDate && (
-                        <button
-                          type="button"
-                          onClick={handleSetSingleDay}
-                          className="px-1.5 py-0.5 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 rounded text-[10px] font-medium transition-colors"
-                          title="시작일과 동일한 1일 평가로 설정"
-                        >
-                          당일(1일) 설정
-                        </button>
-                      )}
-                    </div>
-                  )}
+              {/* 평가 실시일 및 평가 시기 영역 */}
+              <div className="p-3 bg-emerald-50/50 rounded-lg border border-emerald-200/80 space-y-1.5">
+                <div className="flex items-center gap-1.5 font-bold text-slate-700 text-xs">
+                  <Calendar className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>평가 실시일</span>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-[10px] font-semibold text-slate-600 mb-0.5">
-                      📅 시작일 선택
-                    </label>
-                    <input
-                      type="date"
-                      value={startDate}
-                      onChange={(e) => handleStartDateChange(e.target.value)}
-                      className="w-full p-1.5 text-xs bg-white border border-slate-300 rounded-md focus:ring-2 focus:ring-emerald-500 outline-none font-medium text-slate-800"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-semibold text-slate-600 mb-0.5">
-                      📅 종료일 선택 (하루만 실시 시 시작일과 동일하게 선택)
-                    </label>
-                    <input
-                      type="date"
-                      value={endDate}
-                      min={startDate || undefined}
-                      onChange={(e) => handleEndDateChange(e.target.value)}
-                      className="w-full p-1.5 text-xs bg-white border border-slate-300 rounded-md focus:ring-2 focus:ring-emerald-500 outline-none font-medium text-slate-800"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <div className="flex justify-between items-center mb-0.5">
-                    <label className="block text-[10px] font-semibold text-slate-600">
-                      평가 시기 (실시일에 따라 자동 산출, 직접 수정 가능)
-                    </label>
-                    {startDate && period && (
-                      <span className="text-[10px] text-emerald-700 font-medium">
-                        자동 연동됨
-                      </span>
-                    )}
-                  </div>
+                <div className="flex items-center gap-2">
                   <input
-                    type="text"
-                    value={period}
-                    onChange={(e) => onChange((prev) => ({ ...prev, [periodKey]: e.target.value }))}
-                    placeholder="예: 9월 3주 또는 9월 3주 ~ 9월 4주"
-                    className="w-full p-1.5 text-xs bg-white border border-slate-300 rounded-md focus:ring-2 focus:ring-emerald-500 outline-none font-medium"
+                    type="date"
+                    value={startDate}
+                    onChange={(e) => handleStartDateChange(e.target.value)}
+                    className="flex-1 p-2 text-xs bg-white border border-slate-300 rounded-md focus:ring-2 focus:ring-emerald-500 outline-none font-medium text-slate-800 shadow-xs"
                   />
+                  <span className="text-slate-400 font-bold text-sm">~</span>
+                  <input
+                    type="date"
+                    value={endDate}
+                    min={startDate || undefined}
+                    onChange={(e) => handleEndDateChange(e.target.value)}
+                    className="flex-1 p-2 text-xs bg-white border border-slate-300 rounded-md focus:ring-2 focus:ring-emerald-500 outline-none font-medium text-slate-800 shadow-xs"
+                  />
+                </div>
+
+                <div className="text-[11px] text-slate-500 font-medium pl-0.5">
+                  평가 시기: <span className="text-emerald-700 font-semibold">{period || "-"}</span>
                 </div>
               </div>
 

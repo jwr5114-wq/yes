@@ -4,7 +4,7 @@ import { AI_RULE_CHECKBOX_OPTIONS, DEFAULT_PERF_NOTE_TEXT } from "../constants";
 import { getExpandedStdText } from "../utils/hwpParser";
 import { formatDateRangeDisplay } from "../utils/dateUtils";
 import { generateWithGemini } from "../utils/geminiApi";
-import { Sparkles, Plus, Trash2, Loader2, AlertCircle, CheckCircle, Calendar } from "lucide-react";
+import { Sparkles, Plus, Trash2, Loader2, AlertCircle, CheckCircle, Calendar, AlertTriangle } from "lucide-react";
 
 interface Step3PerformanceDetailProps {
   data: PlanData;
@@ -18,8 +18,9 @@ export const Step3PerformanceDetail: React.FC<Step3PerformanceDetailProps> = ({
   showToast,
 }) => {
   const [activeTab, setActiveTab] = useState<number>(1);
-  const [flowLoading, setFlowLoading] = useState<Record<number, boolean>>({});
-  const [rubricLoading, setRubricLoading] = useState<Record<number, boolean>>({});
+  const [aiLoading, setAiLoading] = useState<Record<number, boolean>>({});
+  const [aiStepText, setAiStepText] = useState<Record<number, string>>({});
+  const [confirmModalPerfIndex, setConfirmModalPerfIndex] = useState<number | null>(null);
 
   const currentTab = Math.min(Math.max(1, activeTab), data.perfCount || 1);
 
@@ -50,180 +51,6 @@ export const Step3PerformanceDetail: React.FC<Step3PerformanceDetailProps> = ({
     onChange((prev) => ({ ...prev, [aiKey]: currentText }));
   };
 
-  // AI Recommendation for Task Flow
-  const handleRecommendFlow = async (perfIndex: number) => {
-    const nameKey = `perf${perfIndex}Name` as keyof PlanData;
-    const methodKey = `perf${perfIndex}Method` as keyof PlanData;
-    const stdKey = `perf${perfIndex}Std` as keyof PlanData;
-    const flowKey = `perf${perfIndex}Flow` as keyof PlanData;
-
-    const perfName = String(data[nameKey] || "");
-    const perfMethod = String(data[methodKey] || "");
-    const stdCodes = String(data[stdKey] || "");
-    const stdText = getExpandedStdText(
-      stdCodes,
-      data.curriculumFullText,
-      data.curriculumSubjects,
-      data.curriculumSelectedOriginalIdx
-    );
-
-    if (!perfName.trim()) {
-      showToast("먼저 2단계에서 수행평가명을 입력해주세요.");
-      return;
-    }
-
-    setFlowLoading((prev) => ({ ...prev, [perfIndex]: true }));
-
-    const prompt = `너는 고등학교 교사를 돕는 평가 설계 도우미야. 아래 정보를 참고해서 이 수행평가의 "수행 과제 흐름(단계별 절차)"을 4~5단계로 추천해줘.
-
-- 과목명: ${data.subjectName || ""}
-- 수행평가명: ${perfName}
-- 평가 방법: ${perfMethod}
-- 관련 성취기준(코드 및 내용):
-${stdText || "(선택된 성취기준 없음)"}
-
-출력 형식 규칙(반드시 지킬 것):
-- 다른 설명이나 인사말 없이, 절차 목록만 텍스트로 바로 출력할 것
-- 반드시 1), 2), 3), 4) 형식으로 시작할 것
-- 각 단계는 한 줄로 짧게 작성하며, 불필요한 설명 없이 핵심 행동만 단답형/개조식으로 작성할 것 (한 단계당 15~25자 내외)
-- 긴 문장형 서술 절대 금지 (예: "탐구 대상 분자를 선정하고..." (X) -> "대상 분자 선정" (O))
-- 만약 평가 방법이나 수행평가명에 '보고서'가 포함되어 있다면 마지막 단계는 가능하면 "보고서 작성 및 제출" 형태로 마무리할 것
-- 단계마다 한 줄씩 줄바꿈하여 출력할 것
-
-예시 형식:
-1) 입체 구조 모델링 주제 확정
-2) 대상 분자 선정
-3) 결합 극성 사전 이론 정리
-4) 보고서 작성 및 제출`;
-
-    try {
-      const generated = await generateWithGemini({ prompt });
-      onChange((prev) => ({ ...prev, [flowKey]: generated.trim() }));
-      showToast(`수행평가 ${perfIndex}의 과제 흐름 AI 추천이 완료되었습니다.`);
-    } catch (err: any) {
-      console.error("AI Flow error:", err);
-      showToast(`AI 추천 오류: ${err.message || err}`);
-    } finally {
-      setFlowLoading((prev) => ({ ...prev, [perfIndex]: false }));
-    }
-  };
-
-  // AI Recommendation for Rubrics
-  const handleRecommendRubric = async (perfIndex: number) => {
-    const nameKey = `perf${perfIndex}Name` as keyof PlanData;
-    const methodKey = `perf${perfIndex}Method` as keyof PlanData;
-    const scoreKey = `perf${perfIndex}Score` as keyof PlanData;
-    const stdKey = `perf${perfIndex}Std` as keyof PlanData;
-    const flowKey = `perf${perfIndex}Flow` as keyof PlanData;
-    const rubricKey = `perf${perfIndex}RubricCriteria` as keyof PlanData;
-
-    const perfName = String(data[nameKey] || "");
-    const perfMethod = String(data[methodKey] || "");
-    const areaScore = Number(data[scoreKey] ?? 100);
-    const flowText = String(data[flowKey] || "");
-    const stdCodes = String(data[stdKey] || "");
-    const stdText = getExpandedStdText(
-      stdCodes,
-      data.curriculumFullText,
-      data.curriculumSubjects,
-      data.curriculumSelectedOriginalIdx
-    );
-
-    if (!perfName.trim()) {
-      showToast("먼저 2단계에서 수행평가명을 입력해주세요.");
-      return;
-    }
-
-    setRubricLoading((prev) => ({ ...prev, [perfIndex]: true }));
-
-    const prompt = `너는 고등학교 교사를 돕는 전문 평가 루브릭(채점 기준표) 설계 도우미야. 아래 정보를 참고하여 이 수행평가의 "평가요소 및 채점기준(루브릭)"을 4단계 수행수준 원칙에 따라 설계해줘.
-
-[수행평가 정보]
-- 과목명: ${data.subjectName || ""}
-- 수행평가명: ${perfName}
-- 평가 방법: ${perfMethod}
-- 영역 만점: ${areaScore}점
-- 관련 성취기준:
-${stdText || "(선택된 성취기준 없음)"}
-- 수행 과제 흐름(단계별 절차):
-${flowText || "(작성되지 않음)"}
-
-[핵심 루브릭 설계 원칙 - 반드시 준수]
-1. 각 평가요소는 기본적으로 **4단계 수행수준(1단계: 매우 잘함, 2단계: 잘함, 3단계: 보통, 4단계: 미흡)**으로 설계할 것.
-2. 최고점 바로 아래 단계부터 '부족하다/오류가 있다/미흡하다'고 평가하지 말 것. 학생이 실제로 보여준 수행의 수준을 **긍정적이고 관찰 가능한 행동 중심**으로 구분할 것.
-   - **1단계(최고점, 매우 잘함)**: 정확성, 구체성, 논리성, 종합성이 높은 수준. (예: 분자의 구조와 성질의 관계를 정확하고 구체적으로 분석하고 과학적 근거를 바탕으로 논리적으로 설명함.)
-   - **2단계(잘함)**: 핵심 내용을 대부분 적절하게 수행한 수준. **★주의: '다소 부족함', '오류가 있음', '미흡함' 등의 부정적 표현을 절대 사용하지 말고, 핵심 개념을 바탕으로 적절히 수행한 긍정적 행동을 기술할 것.** (예: 분자의 구조와 성질의 관계를 적절하게 분석하고, 주요 과학 개념을 활용하여 그 관계를 설명함.)
-   - **3단계(보통)**: 기본적인 개념과 수행을 충족한 수준. 단순히 실패나 오류를 나열하지 말고, **학생이 실제로 수행한 내용이 무엇인지 먼저 기술할 것.** (예: 분자의 구조와 성질 사이의 기본적인 관계를 파악하고, 주요 특징을 중심으로 설명함.)
-   - **4단계(최저점, 미흡)**: 최소한의 수행은 확인되지만 목표 도달이 충분하지 않은 수준. **가장 낮은 단계에서만 부족한 수행 특성이 구체적으로 드러나도록 작성할 것.** (예: 분자의 구조 또는 성질의 일부 특징을 제시하였으나, 두 요소의 관계를 충분히 설명하지 못함.)
-3. 모든 단계의 문장은 서로 독립적으로 읽어도 해당 수준의 수행 특성을 판단할 수 있도록 완전한 문장으로 서술할 것.
-4. **점수 및 배점 조건**:
-   - 2~3개의 평가요소(criteria)로 구성할 것.
-   - 모든 평가요소의 "최고점"의 합은 정확히 ${areaScore}점이 되어야 함.
-   - 각 평가요소의 "최저점에서 1점을 뺀 값"들의 합은 반드시 40점 미만이어야 함 (예: 각 요소 최저점이 10점, 10점, 10점이면 (9+9+9)=27점 < 40점).
-
-출력 형식: 다른 설명이나 코드블록 없이 JSON 배열만 출력할 것.
-[
-  {
-    "name": "평가요소명1",
-    "levels": [
-      {"score": 40, "desc": "1단계(매우 잘함) 구체적 성취 기준 문장"},
-      {"score": 32, "desc": "2단계(잘함) 긍정적/관찰 가능한 성취 기준 문장"},
-      {"score": 24, "desc": "3단계(보통) 기본 개념 충족 성취 기준 문장"},
-      {"score": 12, "desc": "4단계(미흡) 최소 수행 및 한계 기준 문장"}
-    ]
-  },
-  {
-    "name": "평가요소명2",
-    "levels": [
-      {"score": 30, "desc": "..."},
-      {"score": 24, "desc": "..."},
-      {"score": 18, "desc": "..."},
-      {"score": 10, "desc": "..."}
-    ]
-  }
-]`;
-
-    try {
-      const generated = await generateWithGemini({
-        prompt,
-        responseMimeType: "application/json",
-      });
-
-      let parsed: any;
-      try {
-        parsed = JSON.parse(generated.replace(/^```json\s*/i, "").replace(/^```\s*/, "").replace(/```\s*$/, "").trim());
-      } catch {
-        throw new Error("AI 응답을 JSON으로 변환하지 못했습니다.");
-      }
-
-      if (!Array.isArray(parsed) || parsed.length === 0) {
-        throw new Error("올바른 루브릭 형식이 아닙니다.");
-      }
-
-      const normalized: RubricCriterion[] = parsed
-        .map((c: any) => ({
-          name: (c.name || "").toString(),
-          levels: Array.isArray(c.levels)
-            ? c.levels
-                .map((lv: any) => ({
-                  score: parseInt(lv.score, 10) || 0,
-                  desc: (lv.desc || "").toString(),
-                }))
-                .sort((a: any, b: any) => b.score - a.score)
-            : [],
-        }))
-        .filter((c) => c.levels.length > 0);
-
-      onChange((prev) => ({ ...prev, [rubricKey]: normalized }));
-      showToast(`수행평가 ${perfIndex}의 루브릭 AI 설계가 완료되었습니다.`);
-    } catch (err: any) {
-      console.error("AI Rubric error:", err);
-      showToast(`AI 추천 오류: ${err.message || err}`);
-    } finally {
-      setRubricLoading((prev) => ({ ...prev, [perfIndex]: false }));
-    }
-  };
-
   // Rubric editing functions for a given perfIndex
   const getRubricCriteria = (perfIndex: number): RubricCriterion[] => {
     const key = `perf${perfIndex}RubricCriteria` as keyof PlanData;
@@ -233,6 +60,253 @@ ${flowText || "(작성되지 않음)"}
   const setRubricCriteria = (perfIndex: number, criteria: RubricCriterion[]) => {
     const key = `perf${perfIndex}RubricCriteria` as keyof PlanData;
     onChange((prev) => ({ ...prev, [key]: criteria }));
+  };
+
+  // Check if existing content exists for this performance assessment
+  const hasExistingContent = (perfIndex: number): boolean => {
+    const flow = String(data[`perf${perfIndex}Flow` as keyof PlanData] || "").trim();
+    const criteria = getRubricCriteria(perfIndex);
+    const hasRubric =
+      criteria.length > 0 &&
+      criteria.some(
+        (c) => c.name.trim() !== "" || c.levels.some((l) => l.desc && l.desc.trim() !== "")
+      );
+    return flow.length > 0 || hasRubric;
+  };
+
+  // Two-Step Sequential AI Generation:
+  // 1단계: 수행 과제 흐름 생성 -> 저장 및 화면 반영
+  // 2단계: 방금 새로 생성된 수행 과제 흐름을 바탕으로 루브릭 생성 -> 저장 및 화면 반영
+  const runUnifiedAi = async (perfIndex: number) => {
+    const nameKey = `perf${perfIndex}Name` as keyof PlanData;
+    const methodKey = `perf${perfIndex}Method` as keyof PlanData;
+    const scoreKey = `perf${perfIndex}Score` as keyof PlanData;
+    const stdKey = `perf${perfIndex}Std` as keyof PlanData;
+    const flowKey = `perf${perfIndex}Flow` as keyof PlanData;
+    const rubricKey = `perf${perfIndex}RubricCriteria` as keyof PlanData;
+    const startKey = `perf${perfIndex}StartDate` as keyof PlanData;
+    const endKey = `perf${perfIndex}EndDate` as keyof PlanData;
+    const periodKey = `perf${perfIndex}Period` as keyof PlanData;
+
+    const perfName = String(data[nameKey] || "");
+    const perfMethod = String(data[methodKey] || "");
+    const areaScore = Number(data[scoreKey] ?? 100);
+    const stdCodes = String(data[stdKey] || "");
+    const stdText = getExpandedStdText(
+      stdCodes,
+      data.curriculumFullText,
+      data.curriculumSubjects,
+      data.curriculumSelectedOriginalIdx
+    );
+    const startDate = String(data[startKey] || "");
+    const endDate = String(data[endKey] || "");
+    const period = String(data[periodKey] || "");
+    const dateDisplay = formatDateRangeDisplay(startDate, endDate) || period;
+
+    if (!perfName.trim()) {
+      showToast("먼저 2단계에서 수행평가명을 입력해주세요.");
+      return;
+    }
+
+    setAiLoading((prev) => ({ ...prev, [perfIndex]: true }));
+    setAiStepText((prev) => ({ ...prev, [perfIndex]: "1단계: 수행 과제 흐름 생성 중..." }));
+
+    let generatedFlow = "";
+
+    try {
+      // -----------------------------------------------------------------
+      // [1단계] 수행 과제 흐름 생성
+      // -----------------------------------------------------------------
+      const step1Prompt = `너는 대한민국 2022 개정 교육과정 기반 고등학교 수업 및 평가 설계 전문가야.
+아래 제공된 수행평가 기본 정보와 성취기준을 분석하여, 학생이 실제로 수행할 "수행 과제 흐름(단계별 절차)"을 4~5단계로 명확하게 작성해줘.
+
+[수행평가 기본 정보]
+- 과목명: ${data.subjectName || ""}
+- 수행평가명: ${perfName}
+- 평가 방법: ${perfMethod || "보고서/실기/서술형"}
+- 영역 만점: ${areaScore}점
+- 평가 실시일/시기: ${dateDisplay || "(시기 미지정)"}
+- 관련 교육과정 성취기준 (코드 및 전체 원문):
+${stdText || "(선택된 성취기준 없음)"}
+
+[수행 과제 흐름 작성 규칙]
+1. 반드시 4~5단계의 짧고 명확한 번호 매김 형식으로 작성할 것.
+   예시:
+   1) 대상 분자 선정
+   2) 분자 구조 모델링
+   3) 극성 및 물질의 성질 분석
+   4) 결과 해석 및 보고서 작성
+2. 각 단계는 불필요한 서술형 수식어 없이 학생의 구체적인 핵심 활동을 단답형 또는 개조식으로 짧게 작성할 것 (단계당 15~25자 내외).
+3. 긴 문장형 서술 금지 (예: "탐구 대상 분자를 선정하고 조사한다" (X) -> "대상 분자 선정" (O)).
+4. 평가 방법이나 명칭에 '보고서'가 포함되어 있다면 마지막 단계는 "결과 해석 및 보고서 작성" 또는 "보고서 작성 및 제출" 형태로 마무리할 것.
+
+[출력 형식: 반드시 아래 JSON 구조로만 출력할 것]
+{
+  "flow": "1) 대상 분자 선정\\n2) 분자 구조 모델링\\n3) 극성 및 물질의 성질 분석\\n4) 결과 해석 및 보고서 작성"
+}`;
+
+      const flowRes = await generateWithGemini({
+        prompt: step1Prompt,
+        responseMimeType: "application/json",
+      });
+
+      let flowParsed: any;
+      try {
+        flowParsed = JSON.parse(
+          flowRes.replace(/^```json\s*/i, "").replace(/^```\s*/, "").replace(/```\s*$/, "").trim()
+        );
+      } catch {
+        throw new Error("수행 과제 흐름 AI 응답을 JSON으로 변환하지 못했습니다.");
+      }
+
+      generatedFlow = (flowParsed.flow || "").toString().trim();
+      if (!generatedFlow) {
+        throw new Error("수행 과제 흐름이 생성되지 않았습니다.");
+      }
+
+      // 1단계 결과 즉시 상태에 반영하여 화면에 표시
+      onChange((prev) => ({
+        ...prev,
+        [flowKey]: generatedFlow,
+      }));
+
+      // -----------------------------------------------------------------
+      // [2단계] 방금 생성된 수행 과제 흐름을 기준으로 루브릭 생성
+      // -----------------------------------------------------------------
+      setAiStepText((prev) => ({ ...prev, [perfIndex]: "2단계: 과제 흐름 기반 루브릭 생성 중..." }));
+
+      const step2Prompt = `너는 대한민국 2022 개정 교육과정 기반 고등학교 수업 및 평가 설계 전문가야.
+아래 제공된 수행평가 기본 정보와 성취기준, 그리고 [방금 새로 생성된 수행 과제 흐름]을 바탕으로 학생의 실제 활동을 직접 평가할 수 있는 "평가요소 및 채점기준(루브릭)"을 설계해줘.
+
+[수행평가 기본 정보]
+- 과목명: ${data.subjectName || ""}
+- 수행평가명: ${perfName}
+- 평가 방법: ${perfMethod || "보고서/실기/서술형"}
+- 영역 만점: ${areaScore}점
+- 관련 교육과정 성취기준 (코드 및 전체 원문):
+${stdText || "(선택된 성취기준 없음)"}
+
+[★방금 새로 생성된 수행 과제 흐름 (반드시 이 흐름의 실제 활동들을 평가요소로 설계할 것)]
+${generatedFlow}
+
+[루브릭 설계 규칙]
+1. 평가요소(criteria) 개수 및 구성 (★매우 중요):
+   - 평가요소는 반드시 **최소 3개 이상** (과제 흐름이 다양하거나 복잡한 경우 4개 이상)으로 구성할 것.
+   - 억지로 3개로 고정하지 말고, 수행 과제 흐름의 핵심 활동들이 루브릭에서 누락되지 않도록 충실하게 구성할 것.
+   - 각 평가요소는 위 [방금 새로 생성된 수행 과제 흐름]의 실제 학생 활동 및 단계와 직접 긴밀하게 연결되어야 함.
+   - 서로 유사한 평가요소를 이름만 바꾸어 중복 생성하지 말 것.
+   - 예시 (과제 흐름: '1) 대상 분자 선정 2) 분자 구조 모델링 3) 극성 및 물질의 성질 분석 4) 결과 해석 및 보고서 작성'):
+     * 평가요소 1: 분자 구조 모델링
+     * 평가요소 2: 극성 및 물질의 성질 분석
+     * 평가요소 3: 결과 해석 및 과학적 설명
+     * 평가요소 4: 보고서 구성 및 표현
+
+2. 4단계 수행수준(levels):
+   - 각 평가요소는 반드시 4단계 수행수준(1단계: 매우 잘함, 2단계: 잘함, 3단계: 보통, 4단계: 미흡)으로 작성할 것.
+   - ★핵심 규칙(매우 중요): 최고점 바로 아래 단계부터 '부족함', '오류가 있음', '미흡함' 같은 감점형/부정적 표현을 절대 사용하지 말 것! 학생이 실제로 보여준 성취를 긍정적이고 관찰 가능한 행동 중심으로 기술할 것.
+     * 1단계(최고점, 매우 잘함): 높은 정확성, 구체성, 논리성, 종합적 수행을 갖춘 기준 문장.
+     * 2단계(잘함): 핵심 내용을 대부분 적절하게 수행한 수준. ('다소 부족함', '오류가 있음' 등의 부정적 표현 절대 금지, 핵심 개념을 바탕으로 적절히 수행한 긍정적 행동 서술)
+     * 3단계(보통): 기본 개념과 핵심 원리를 파악하여 수행한 기준 문장.
+     * 4단계(최저점, 미흡): 최소한의 수행이 확인되나 목표 도달에 한계가 있는 특성을 마지막 단계에서만 구체적으로 기술.
+
+3. 점수 및 배점 조건 (검증 규칙 준수):
+   - 생성된 모든 평가요소의 "최고점"의 합은 정확히 ${areaScore}점이 되어야 함 (예: 3개 요소일 때 35+35+30=100점, 4개 요소일 때 25+25+25+25=100점 등).
+   - 각 평가요소의 "최저점에서 1점을 뺀 값"들의 합은 반드시 40점 미만이어야 함 (예: 3개 요소일 때 최저점이 각 10점, 10점, 10점이면 (9+9+9)=27점 < 40점).
+
+[출력 형식: 반드시 아래 JSON 구조로만 출력할 것 (최소 3개 이상의 평가요소 포함)]
+{
+  "rubric": [
+    {
+      "name": "평가요소명1",
+      "levels": [
+        {"score": 35, "desc": "1단계(매우 잘함) 성취 기준 문장"},
+        {"score": 30, "desc": "2단계(잘함) 긍정적/관찰 가능한 성취 기준 문장"},
+        {"score": 25, "desc": "3단계(보통) 기본 개념 충족 성취 기준 문장"},
+        {"score": 10, "desc": "4단계(미흡) 최소 수행 기준 문장"}
+      ]
+    },
+    {
+      "name": "평가요소명2",
+      "levels": [
+        {"score": 35, "desc": "1단계(매우 잘함) 성취 기준 문장"},
+        {"score": 30, "desc": "2단계(잘함) 긍정적/관찰 가능한 성취 기준 문장"},
+        {"score": 25, "desc": "3단계(보통) 기본 개념 충족 성취 기준 문장"},
+        {"score": 10, "desc": "4단계(미흡) 최소 수행 기준 문장"}
+      ]
+    },
+    {
+      "name": "평가요소명3",
+      "levels": [
+        {"score": 30, "desc": "1단계(매우 잘함) 성취 기준 문장"},
+        {"score": 25, "desc": "2단계(잘함) 긍정적/관찰 가능한 성취 기준 문장"},
+        {"score": 20, "desc": "3단계(보통) 기본 개념 충족 성취 기준 문장"},
+        {"score": 10, "desc": "4단계(미흡) 최소 수행 기준 문장"}
+      ]
+    }
+  ]
+}`;
+
+      const rubricRes = await generateWithGemini({
+        prompt: step2Prompt,
+        responseMimeType: "application/json",
+      });
+
+      let rubricParsed: any;
+      try {
+        rubricParsed = JSON.parse(
+          rubricRes.replace(/^```json\s*/i, "").replace(/^```\s*/, "").replace(/```\s*$/, "").trim()
+        );
+      } catch {
+        throw new Error("루브릭 AI 응답을 JSON으로 변환하지 못했습니다.");
+      }
+
+      let normalizedRubric: RubricCriterion[] = [];
+      if (Array.isArray(rubricParsed.rubric)) {
+        normalizedRubric = rubricParsed.rubric
+          .map((c: any) => ({
+            name: (c.name || "").toString(),
+            levels: Array.isArray(c.levels)
+              ? c.levels
+                  .map((lv: any) => ({
+                    score: parseInt(lv.score, 10) || 0,
+                    desc: (lv.desc || "").toString(),
+                  }))
+                  .sort((a: any, b: any) => b.score - a.score)
+              : [],
+          }))
+          .filter((c) => c.levels.length > 0);
+      }
+
+      if (normalizedRubric.length === 0) {
+        throw new Error("유효한 루브릭 평가요소가 생성되지 않았습니다.");
+      }
+
+      // 2단계 결과 즉시 상태에 반영하여 화면에 표시 (과제 흐름과 루브릭 최종 동기화)
+      onChange((prev) => ({
+        ...prev,
+        [flowKey]: generatedFlow,
+        [rubricKey]: normalizedRubric,
+      }));
+
+      showToast(`[수행평가 ${perfIndex}] 과제 흐름 및 연계 루브릭 AI 생성이 완료되었습니다.`);
+    } catch (err: any) {
+      console.error("Unified AI Error:", err);
+      showToast(`AI 생성 오류: ${err.message || err}`);
+    } finally {
+      setAiLoading((prev) => ({ ...prev, [perfIndex]: false }));
+      setAiStepText((prev) => ({ ...prev, [perfIndex]: "" }));
+    }
+  };
+
+  // Trigger button handler with overwrite confirmation check
+  const handleAiButtonClick = (perfIndex: number) => {
+    if (aiLoading[perfIndex]) return;
+
+    if (hasExistingContent(perfIndex)) {
+      setConfirmModalPerfIndex(perfIndex);
+    } else {
+      runUnifiedAi(perfIndex);
+    }
   };
 
   const updateCriterionName = (perfIndex: number, cIdx: number, val: string) => {
@@ -297,6 +371,52 @@ ${flowText || "(작성되지 않음)"}
 
   return (
     <div className="space-y-5">
+      {/* Overwrite Confirmation Modal */}
+      {confirmModalPerfIndex !== null && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl max-w-md w-full p-5 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-full bg-purple-100 text-purple-700 flex items-center justify-center shrink-0">
+                <Sparkles className="w-5 h-5" />
+              </div>
+              <div className="space-y-1.5">
+                <h3 className="font-bold text-slate-900 text-sm">수행 과제 흐름 및 루브릭 작성 확인</h3>
+                <p className="text-xs text-slate-800 font-medium leading-relaxed">
+                  AI를 활용하면 수행 과제 흐름과 루브릭을 새로 작성합니다. 계속하시겠습니까?
+                </p>
+                <p className="text-[11px] text-purple-700 bg-purple-50 p-2 rounded border border-purple-200">
+                  ※ 1단계 과제 흐름 생성 후, 그 결과를 기준으로 2단계 연계 루브릭이 순차적으로 자동 작성됩니다.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setConfirmModalPerfIndex(null)}
+                className="px-3.5 py-1.5 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-100 transition-all cursor-pointer"
+              >
+                취소
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const targetIdx = confirmModalPerfIndex;
+                  setConfirmModalPerfIndex(null);
+                  if (targetIdx !== null) {
+                    runUnifiedAi(targetIdx);
+                  }
+                }}
+                className="px-4 py-1.5 rounded-lg text-xs font-bold text-white bg-purple-600 hover:bg-purple-700 shadow-md shadow-purple-600/20 transition-all cursor-pointer flex items-center gap-1.5"
+              >
+                <Sparkles className="w-3.5 h-3.5" /> 계속하기
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Header */}
       <div className="border-b border-slate-200 pb-3 flex justify-between items-center gap-2">
         <div>
           <h2 className="text-base font-bold text-slate-800 flex items-center gap-2">
@@ -326,7 +446,7 @@ ${flowText || "(작성되지 않음)"}
               key={num}
               type="button"
               onClick={() => setActiveTab(num)}
-              className={`px-3 py-1.5 text-xs font-bold rounded-lg border transition-all whitespace-nowrap shrink-0 ${
+              className={`px-3 py-1.5 text-xs font-bold rounded-lg border transition-all whitespace-nowrap shrink-0 cursor-pointer ${
                 isSelected
                   ? "bg-blue-600 text-white border-blue-600 shadow-sm"
                   : "bg-white text-slate-600 border-slate-300 hover:bg-slate-50"
@@ -357,6 +477,7 @@ ${flowText || "(작성되지 않음)"}
         const aiText = String(data[`perf${num}Ai` as keyof PlanData] || "");
         const note = String(data[`perf${num}Note` as keyof PlanData] ?? DEFAULT_PERF_NOTE_TEXT);
         const criteria = getRubricCriteria(num);
+        const isLoading = aiLoading[num] || false;
 
         // Validation sums for rubric
         let maxSum = 0;
@@ -373,10 +494,10 @@ ${flowText || "(작성되지 않음)"}
         const startDate = String(data[`perf${num}StartDate` as keyof PlanData] || "");
         const endDate = String(data[`perf${num}EndDate` as keyof PlanData] || "");
         const period = String(data[`perf${num}Period` as keyof PlanData] || "");
-        const dateRange = formatDateRangeDisplay(startDate, endDate);
 
         return (
           <div key={num} className="p-4 border border-slate-200 rounded-lg space-y-4 bg-slate-50 shadow-sm">
+            {/* Assessment Title and Info Header */}
             <div className="flex justify-between items-center border-b border-slate-200 pb-2 flex-wrap gap-2">
               <h3 className="font-bold text-xs text-blue-800 flex items-center gap-1.5">
                 <span>✏️ [수행평가 {num}]</span>
@@ -395,50 +516,70 @@ ${flowText || "(작성되지 않음)"}
               </div>
             </div>
 
+            {/* Compact Clean AI Action Bar */}
+            <div className="bg-white border border-slate-200 rounded-lg p-3 sm:p-3.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+              <div>
+                <h4 className="text-xs sm:text-sm font-bold text-slate-800 flex items-center gap-1.5">
+                  <Sparkles className="w-4 h-4 text-purple-600" />
+                  <span>수행평가 AI 작성</span>
+                </h4>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  수행 과제 흐름을 먼저 생성하고, 이를 기준으로 루브릭을 작성합니다.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => handleAiButtonClick(num)}
+                disabled={isLoading}
+                className={`w-full sm:w-auto px-3.5 py-1.5 sm:px-4 sm:py-2 rounded-lg font-bold text-xs shadow-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer shrink-0 ${
+                  isLoading
+                    ? "bg-purple-400 text-purple-50 cursor-not-allowed"
+                    : "bg-purple-600 hover:bg-purple-700 text-white shadow-purple-600/20 active:scale-[0.98]"
+                }`}
+              >
+                {isLoading ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>AI 작성 중...</span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>✨ AI 활용하기</span>
+                  </>
+                )}
+              </button>
+            </div>
+
             {/* Related Standards Display */}
             <div>
               <label className="block text-[11px] font-semibold text-slate-700 mb-1">
                 관련 교육과정 성취기준{" "}
-                <span className="font-normal text-slate-400">(2단계에서 선택한 내용이 자동 반영됩니다)</span>
+                <span className="font-normal text-slate-400">(2단계에서 선택한 코드의 전체 원문 문구가 자동 연동됩니다)</span>
               </label>
               <textarea
-                rows={3}
+                rows={4}
                 value={stdExpanded || "- 성취기준이 지정되지 않았습니다 -"}
                 readOnly
-                className="w-full text-xs p-2 border rounded border-slate-300 bg-slate-100 text-slate-700 leading-relaxed cursor-not-allowed font-medium"
+                className="w-full text-xs p-2.5 border rounded-lg border-slate-300 bg-slate-100/90 text-slate-800 leading-relaxed cursor-not-allowed font-medium shadow-xs"
               />
             </div>
 
-            {/* Task Flow with AI Recommendation */}
+            {/* Task Flow (Manual editing preserved, separate AI button removed) */}
             <div>
               <div className="flex justify-between items-center mb-1">
                 <label className="block text-[11px] font-semibold text-slate-700">수행 과제 흐름 (단계별 절차)</label>
-                <button
-                  type="button"
-                  onClick={() => handleRecommendFlow(num)}
-                  disabled={flowLoading[num]}
-                  className="px-2.5 py-1 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-md text-[11px] font-bold transition-all shadow-sm flex items-center gap-1 cursor-pointer"
-                >
-                  {flowLoading[num] ? (
-                    <>
-                      <Loader2 className="w-3 h-3 animate-spin" /> 생성 중...
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles className="w-3 h-3" />
-                      {flow ? "AI 다시 활용하기" : "AI 활용하기"}
-                    </>
-                  )}
-                </button>
+                <span className="text-[10px] text-purple-600 font-medium">교사 직접 수정 가능</span>
               </div>
               <textarea
-                rows={3}
+                rows={4}
                 value={flow}
                 onChange={(e) =>
                   onChange((prev) => ({ ...prev, [`perf${num}Flow` as keyof PlanData]: e.target.value }))
                 }
-                placeholder="1) 주제 확정  2) 자료 조사  3) 결과 분석  4) 보고서 제출"
-                className="w-full text-xs p-2 border rounded border-slate-300 bg-white focus:ring-2 focus:ring-blue-500 outline-none leading-relaxed"
+                placeholder="1) 대상 분자 선정&#10;2) 분자 구조 모델링&#10;3) 극성 및 물질의 성질 분석&#10;4) 보고서 작성 및 제출"
+                className="w-full text-xs p-2.5 border rounded-lg border-slate-300 bg-white focus:ring-2 focus:ring-blue-500 outline-none leading-relaxed font-medium"
               />
             </div>
 
@@ -472,29 +613,13 @@ ${flowText || "(작성되지 않음)"}
               />
             </div>
 
-            {/* Rubric Builder with AI Recommendation */}
+            {/* Rubric Builder (Manual editing preserved, separate AI button removed) */}
             <div>
               <div className="flex justify-between items-center mb-1 flex-wrap gap-2">
                 <label className="block text-[11px] font-semibold text-slate-700">
                   평가요소 및 채점기준 (루브릭)
                 </label>
-                <button
-                  type="button"
-                  onClick={() => handleRecommendRubric(num)}
-                  disabled={rubricLoading[num]}
-                  className="px-2.5 py-1 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-md text-[11px] font-bold transition-all shadow-sm flex items-center gap-1 cursor-pointer"
-                >
-                  {rubricLoading[num] ? (
-                    <>
-                      <Loader2 className="w-3 h-3 animate-spin" /> 설계 중...
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles className="w-3 h-3" />
-                      {criteria.length ? "AI 다시 활용하기" : "AI 활용하기"}
-                    </>
-                  )}
-                </button>
+                <span className="text-[10px] text-purple-600 font-medium">교사 직접 수정 가능</span>
               </div>
 
               {/* Rubric Scoring Constraints Status */}
@@ -525,8 +650,11 @@ ${flowText || "(작성되지 않음)"}
               {/* Dynamic Criteria List */}
               <div className="space-y-3">
                 {criteria.length === 0 ? (
-                  <div className="text-[11px] text-slate-400 italic py-2 text-center bg-white rounded border border-dashed border-slate-300">
-                    작성된 평가요소가 없습니다. "AI 활용하기" 또는 "평가요소 추가" 버튼을 눌러주세요.
+                  <div className="text-[11px] text-slate-400 italic py-3 text-center bg-white rounded-lg border border-dashed border-slate-300 space-y-1">
+                    <p>작성된 평가요소가 없습니다.</p>
+                    <p className="text-[10px] text-purple-600">
+                      상단의 <b>✨ AI 활용하기</b> 버튼을 누르거나 아래 <b>+ 평가요소 추가</b> 버튼으로 직접 입력해주세요.
+                    </p>
                   </div>
                 ) : (
                   criteria.map((c, cIdx) => {
@@ -550,7 +678,7 @@ ${flowText || "(작성되지 않음)"}
                           <button
                             type="button"
                             onClick={() => removeCriterion(num, cIdx)}
-                            className="text-slate-400 hover:text-red-500 p-1"
+                            className="text-slate-400 hover:text-red-500 p-1 cursor-pointer"
                             title="평가요소 삭제"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
@@ -580,7 +708,7 @@ ${flowText || "(작성되지 않음)"}
                               <button
                                 type="button"
                                 onClick={() => removeLevel(num, cIdx, lIdx)}
-                                className="text-slate-300 hover:text-red-500 text-xs mt-1 shrink-0 p-0.5"
+                                className="text-slate-300 hover:text-red-500 text-xs mt-1 shrink-0 p-0.5 cursor-pointer"
                                 title="단계 삭제"
                               >
                                 ✕
@@ -592,7 +720,7 @@ ${flowText || "(작성되지 않음)"}
                         <button
                           type="button"
                           onClick={() => addLevel(num, cIdx)}
-                          className="text-[11px] text-blue-600 hover:text-blue-800 hover:underline font-medium"
+                          className="text-[11px] text-blue-600 hover:text-blue-800 hover:underline font-medium cursor-pointer"
                         >
                           + 단계 추가
                         </button>
@@ -604,7 +732,7 @@ ${flowText || "(작성되지 않음)"}
                 <button
                   type="button"
                   onClick={() => addCriterion(num)}
-                  className="px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-50 text-blue-700 text-xs rounded-md font-semibold flex items-center gap-1 shadow-xs"
+                  className="px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-50 text-blue-700 text-xs rounded-md font-semibold flex items-center gap-1 shadow-xs cursor-pointer"
                 >
                   <Plus className="w-3.5 h-3.5" /> 평가요소 추가
                 </button>
@@ -629,3 +757,4 @@ ${flowText || "(작성되지 않음)"}
     </div>
   );
 };
+

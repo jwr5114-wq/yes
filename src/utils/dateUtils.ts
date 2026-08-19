@@ -177,6 +177,10 @@ export interface MatchedPerfItem {
   endDate: string;
   period: string;
   std: string;
+  flow: string;
+  ai: string;
+  method: string;
+  rubricCriteria: any[];
 }
 
 /**
@@ -197,6 +201,10 @@ export function getOverlappingPerformancesForWeek(
     const name = String(data[`perf${num}Name` as keyof PlanData] || `수행평가 ${num}`);
     const period = String(data[`perf${num}Period` as keyof PlanData] || "");
     const std = String(data[`perf${num}Std` as keyof PlanData] || "");
+    const flow = String(data[`perf${num}Flow` as keyof PlanData] || "");
+    const ai = String(data[`perf${num}Ai` as keyof PlanData] || "");
+    const method = String(data[`perf${num}Method` as keyof PlanData] || "");
+    const rubricCriteria = (data[`perf${num}RubricCriteria` as keyof PlanData] as any[]) || [];
 
     if (startDate || endDate) {
       const isOverlap = checkPerformanceWeekOverlap(weekDateStr, startDate, endDate);
@@ -208,6 +216,10 @@ export function getOverlappingPerformancesForWeek(
           endDate,
           period,
           std,
+          flow,
+          ai,
+          method,
+          rubricCriteria,
         });
       }
     }
@@ -215,3 +227,130 @@ export function getOverlappingPerformancesForWeek(
 
   return matched;
 }
+
+/**
+ * Extracts a date range { start: "YYYY-MM-DD", end: "YYYY-MM-DD" } from Korean text
+ * like "10월 14일~10월 19일", "10.14. ~ 10.19.", "12.17.~12.22."
+ */
+export function parseDateRangeFromText(text: string, baseYear = 2026): { start: string; end: string } | null {
+  if (!text || !text.trim()) return null;
+  const t = text.trim();
+
+  // Pattern 1: "10월 14일 ~ 10월 19일"
+  const m1 = t.match(/(\d{1,2})월\s*(\d{1,2})일?\s*~\s*(\d{1,2})월\s*(\d{1,2})일?/);
+  if (m1) {
+    const month1 = String(parseInt(m1[1], 10)).padStart(2, "0");
+    const day1 = String(parseInt(m1[2], 10)).padStart(2, "0");
+    const month2 = String(parseInt(m1[3], 10)).padStart(2, "0");
+    const day2 = String(parseInt(m1[4], 10)).padStart(2, "0");
+    return {
+      start: `${baseYear}-${month1}-${day1}`,
+      end: `${baseYear}-${month2}-${day2}`,
+    };
+  }
+
+  // Pattern 2: "10월 14일 ~ 19일"
+  const m2 = t.match(/(\d{1,2})월\s*(\d{1,2})일?\s*~\s*(\d{1,2})일?/);
+  if (m2) {
+    const month = String(parseInt(m2[1], 10)).padStart(2, "0");
+    const day1 = String(parseInt(m2[2], 10)).padStart(2, "0");
+    const day2 = String(parseInt(m2[3], 10)).padStart(2, "0");
+    return {
+      start: `${baseYear}-${month}-${day1}`,
+      end: `${baseYear}-${month}-${day2}`,
+    };
+  }
+
+  // Pattern 3: "10.14. ~ 10.19." or "10/14 ~ 10/19"
+  const m3 = t.match(/(\d{1,2})[.\-/](\d{1,2})[.]?\s*~\s*(\d{1,2})[.\-/](\d{1,2})[.]?/);
+  if (m3) {
+    const month1 = String(parseInt(m3[1], 10)).padStart(2, "0");
+    const day1 = String(parseInt(m3[2], 10)).padStart(2, "0");
+    const month2 = String(parseInt(m3[3], 10)).padStart(2, "0");
+    const day2 = String(parseInt(m3[4], 10)).padStart(2, "0");
+    return {
+      start: `${baseYear}-${month1}-${day1}`,
+      end: `${baseYear}-${month2}-${day2}`,
+    };
+  }
+
+  return null;
+}
+
+export interface MatchedRegularExamItem {
+  type: "mid" | "final";
+  label: "정기시험(중간)" | "정기시험(기말)";
+  name: string;
+  std: string;
+  startDate: string;
+  endDate: string;
+  period: string;
+}
+
+/**
+ * Checks if a specific week is the ACTUAL midterm or final exam execution week.
+ * Matches based on midStartDate/midEndDate, finalStartDate/finalEndDate, or parsed midTime/finalTime.
+ */
+export function getOverlappingRegularExamForWeek(
+  weekDateStr: string,
+  data: PlanData
+): MatchedRegularExamItem | null {
+  if (!weekDateStr) return null;
+
+  // 1. Check Midterm Exam
+  if (data.examCount >= 1) {
+    let mStart = data.midStartDate || "";
+    let mEnd = data.midEndDate || mStart;
+    if (!mStart && data.midTime) {
+      const parsed = parseDateRangeFromText(data.midTime);
+      if (parsed) {
+        mStart = parsed.start;
+        mEnd = parsed.end;
+      }
+    }
+
+    if (mStart || mEnd) {
+      if (checkPerformanceWeekOverlap(weekDateStr, mStart, mEnd)) {
+        return {
+          type: "mid",
+          label: "정기시험(중간)",
+          name: data.examName1 || "중간시험",
+          std: data.midStd || "",
+          startDate: mStart,
+          endDate: mEnd,
+          period: data.midPeriod || data.midTime || "",
+        };
+      }
+    }
+  }
+
+  // 2. Check Final Exam
+  if (data.examCount >= 2) {
+    let fStart = data.finalStartDate || "";
+    let fEnd = data.finalEndDate || fStart;
+    if (!fStart && data.finalTime) {
+      const parsed = parseDateRangeFromText(data.finalTime);
+      if (parsed) {
+        fStart = parsed.start;
+        fEnd = parsed.end;
+      }
+    }
+
+    if (fStart || fEnd) {
+      if (checkPerformanceWeekOverlap(weekDateStr, fStart, fEnd)) {
+        return {
+          type: "final",
+          label: "정기시험(기말)",
+          name: data.examName2 || "기말시험",
+          std: data.finalStd || "",
+          startDate: fStart,
+          endDate: fEnd,
+          period: data.finalPeriod || data.finalTime || "",
+        };
+      }
+    }
+  }
+
+  return null;
+}
+

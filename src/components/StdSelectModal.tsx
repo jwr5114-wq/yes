@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { AchievementStandard } from "../types";
-import { extractAchievementStandards } from "../utils/hwpParser";
+import { extractAchievementStandards, sortAchievementStandardCodes, expandRangeCodes } from "../utils/hwpParser";
 import { BookOpen, X, CheckSquare, Square } from "lucide-react";
 
 interface StdSelectModalProps {
@@ -33,10 +33,17 @@ export const StdSelectModal: React.FC<StdSelectModalProps> = ({
 
   useEffect(() => {
     if (isOpen) {
-      const currentCodes = new Set((initialValue.match(/\[[^\]]+\]/g) || []).map((s) => s.slice(1, -1)));
+      const validSubjectCodeSet = new Set(standards.map((s) => s.code));
+      const expandedInitial = expandRangeCodes(initialValue);
+      // Only keep codes that strictly belong to the current subject's standards
+      const currentCodes = new Set(
+        validSubjectCodeSet.size > 0
+          ? expandedInitial.filter((code) => validSubjectCodeSet.has(code))
+          : expandedInitial
+      );
       setSelectedCodes(currentCodes);
     }
-  }, [isOpen, initialValue]);
+  }, [isOpen, initialValue, curriculumSelectedOriginalIdx]);
 
   if (!isOpen || target === null) return null;
 
@@ -60,9 +67,12 @@ export const StdSelectModal: React.FC<StdSelectModalProps> = ({
   };
 
   const handleApply = () => {
-    const joined = Array.from(selectedCodes)
-      .map((c) => `[${c}]`)
-      .join(", ");
+    const validSubjectCodeSet = new Set(standards.map((s) => s.code));
+    const finalCodes = (Array.from(selectedCodes) as string[]).filter(
+      (c: string) => validSubjectCodeSet.size === 0 || validSubjectCodeSet.has(c)
+    );
+    const sorted = sortAchievementStandardCodes(finalCodes);
+    const joined = sorted.map((c) => `[${c}]`).join(", ");
     onConfirm(joined);
     onClose();
   };
