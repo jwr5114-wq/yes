@@ -13,6 +13,7 @@ import { ProjectsModal } from "./components/ProjectsModal";
 import { VersionsModal } from "./components/VersionsModal";
 import { StdSelectModal } from "./components/StdSelectModal";
 import { JsonExportModal } from "./components/JsonExportModal";
+import { HwpxExportModal } from "./components/HwpxExportModal";
 import { CustomDialog, DialogOptions } from "./components/CustomDialog";
 import { ArrowLeft, ArrowRight, Check } from "lucide-react";
 
@@ -34,6 +35,7 @@ export default function App() {
   const [isProjectsModalOpen, setIsProjectsModalOpen] = useState(false);
   const [isVersionsModalOpen, setIsVersionsModalOpen] = useState(false);
   const [isJsonModalOpen, setIsJsonModalOpen] = useState(false);
+  const [isHwpxModalOpen, setIsHwpxModalOpen] = useState(false);
   const [stdModalTarget, setStdModalTarget] = useState<"mid" | "final" | "perf1" | "perf2" | "perf3" | "perf4" | number | null>(null);
   const [dialog, setDialog] = useState<DialogOptions | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -551,6 +553,14 @@ export default function App() {
         showToast={showToast}
       />
 
+      {/* Real HWPX File Export Modal (fills the school's original template) */}
+      <HwpxExportModal
+        isOpen={isHwpxModalOpen}
+        onClose={() => setIsHwpxModalOpen(false)}
+        data={appData}
+        showToast={showToast}
+      />
+
       {/* Top Header */}
       <Header
         currentProjectName={currentProjectName}
@@ -561,6 +571,7 @@ export default function App() {
         onLoadSample={handleLoadSampleChemistry}
         onDownloadPdf={handleDownloadPdf}
         onOpenJsonExport={() => setIsJsonModalOpen(true)}
+        onOpenHwpxExport={() => setIsHwpxModalOpen(true)}
         onGoToHwpStep={() => setCurrentStep(5)}
         isDownloadingPdf={isDownloadingPdf}
       />

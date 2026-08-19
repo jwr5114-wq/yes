@@ -1,5 +1,5 @@
 import React from "react";
-import { Folder, Save, History, Sparkles, FileDown, FileCode, CheckCircle2, Loader2, Edit3, FileText } from "lucide-react";
+import { Folder, Save, History, Sparkles, FileDown, FileCode, CheckCircle2, Loader2, Edit3, FileText, FileOutput } from "lucide-react";
 
 interface HeaderProps {
   currentProjectName: string;
@@ -10,6 +10,7 @@ interface HeaderProps {
   onLoadSample: () => void;
   onDownloadPdf: () => void;
   onOpenJsonExport: () => void;
+  onOpenHwpxExport: () => void;
   onGoToHwpStep?: () => void;
   isDownloadingPdf: boolean;
 }
@@ -23,6 +24,7 @@ export const Header: React.FC<HeaderProps> = ({
   onLoadSample,
   onDownloadPdf,
   onOpenJsonExport,
+  onOpenHwpxExport,
   onGoToHwpStep,
   isDownloadingPdf,
 }) => {
@@ -102,6 +104,14 @@ export const Header: React.FC<HeaderProps> = ({
           className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 shadow-sm cursor-pointer border border-indigo-400/40"
         >
           <FileCode className="w-3.5 h-3.5 text-indigo-200" /> HWP 연동 데이터 (JSON)
+        </button>
+
+        <button
+          type="button"
+          onClick={onOpenHwpxExport}
+          className="px-3.5 py-1.5 bg-indigo-700 hover:bg-indigo-600 text-white text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 shadow-sm cursor-pointer border border-indigo-400/40"
+        >
+          <FileOutput className="w-3.5 h-3.5 text-indigo-200" /> 한글(HWPX) 파일 완성
         </button>
 
         <button
