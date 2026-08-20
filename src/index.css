@@ -65,6 +65,24 @@
   break-inside: avoid;
 }
 
+/* Fields the teacher must directly type or select (visual highlight only) */
+.required-teacher-input {
+  background-color: #FFF6A6 !important;
+  border-color: #EAB308 !important;
+}
+.required-teacher-input:hover,
+.required-teacher-input:focus,
+.required-teacher-input:focus-visible {
+  background-color: #FFF6A6 !important;
+}
+
+.required-teacher-box {
+  background-color: #FFFCE0 !important;
+  border: 1.5px solid #EAB308 !important;
+  border-radius: 0.5rem !important;
+  padding: 0.5rem 0.625rem !important;
+}
+
 /* Custom scrollbars */
 ::-webkit-scrollbar {
   width: 6px;
