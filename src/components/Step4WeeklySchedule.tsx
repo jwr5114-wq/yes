@@ -7,7 +7,6 @@ import {
 } from "../constants";
 import {
   getExpandedStdText,
-  getAchievementStandardsWithText,
   expandRangeCodes,
   formatStdCodesForDisplay,
   sortAchievementStandardCodes,
@@ -17,97 +16,16 @@ import { getOverlappingPerformancesForWeek, getOverlappingRegularExamForWeek, fo
 import { generateWithGemini } from "../utils/geminiApi";
 import { Sparkles, Plus, Trash2, BookOpen, Loader2, Calendar, CheckCircle2, RotateCw, AlertTriangle } from "lucide-react";
 
-interface ParsedWeekDetail {
-  coreIdea: string;
-  coreQuestions: string[];
-  coreConcept: string;
-  inquiryActivity: string;
-  formativeAssessment: string;
-  feedbackStrategy: string;
-  individualStrategy: string;
-  perfContent: string;
-  perfDirectives: string;
-}
-
-// Helper to extract bracketed sections preserving multiple questions
-function parseWeekDetailSections(rawText: string): ParsedWeekDetail {
-  const result: ParsedWeekDetail = {
-    coreIdea: "",
-    coreQuestions: [],
-    coreConcept: "",
-    inquiryActivity: "",
-    formativeAssessment: "",
-    feedbackStrategy: "",
-    individualStrategy: "",
-    perfContent: "",
-    perfDirectives: "",
-  };
-
-  if (!rawText) return result;
-
-  const regex = /\[(핵심\s*아이디어|핵심개념|핵심질문|수행평가\s*내용|수행평가|수행지시어|탐구\s*활동|학습\s*활동|수업\s*활동|형성\s*평가|형성평가|피드백\s*전략|피드백|학생\s*맞춤형\s*개별화\s*전략|개별화\s*전략|개별화)\]([\s\S]*?)(?=\[(?:핵심\s*아이디어|핵심개념|핵심질문|수행평가\s*내용|수행평가|수행지시어|탐구\s*활동|학습\s*활동|수업\s*활동|형성\s*평가|형성평가|피드백\s*전략|피드백|학생\s*맞춤형\s*개별화\s*전략|개별화\s*전략|개별화)\]|$)/g;
-
-  let match;
-  while ((match = regex.exec(rawText)) !== null) {
-    const rawTag = match[1].replace(/\s+/g, "");
-    const body = match[2].trim();
-
-    if (rawTag === "핵심아이디어") {
-      result.coreIdea = body;
-    } else if (rawTag === "핵심질문") {
-      if (body) result.coreQuestions.push(body);
-    } else if (rawTag === "핵심개념") {
-      result.coreConcept = body;
-    } else if (rawTag === "탐구활동" || rawTag === "학습활동" || rawTag === "수업활동") {
-      result.inquiryActivity = body;
-    } else if (rawTag === "형성평가") {
-      result.formativeAssessment = body;
-    } else if (rawTag === "피드백전략" || rawTag === "피드백") {
-      result.feedbackStrategy = body;
-    } else if (rawTag === "학생맞춤형개별화전략" || rawTag === "개별화전략" || rawTag === "개별화") {
-      result.individualStrategy = body;
-    } else if (rawTag === "수행평가내용" || rawTag === "수행평가") {
-      result.perfContent = body;
-    } else if (rawTag === "수행지시어") {
-      result.perfDirectives = body;
-    }
-  }
-
-  return result;
-}
-
-// Backward-compatible parseSections
+// Helper to extract bracketed sections
 function parseSections(text: string) {
-  const parsed = parseWeekDetailSections(text);
-  return {
-    "핵심아이디어": parsed.coreIdea,
-    "핵심질문": parsed.coreQuestions.join("\n\n"),
-    "핵심개념": parsed.coreConcept,
-    "탐구활동": parsed.inquiryActivity,
-    "형성평가": parsed.formativeAssessment,
-    "피드백전략": parsed.feedbackStrategy,
-    "학생맞춤형개별화전략": parsed.individualStrategy,
-    "수행평가내용": parsed.perfContent,
-    "수행지시어": parsed.perfDirectives,
-  };
-}
-
-// Helper to format bulleted lines cleanly under an explicit section
-function formatBulletItems(content: string, tagToClean?: string): string {
-  if (!content) return "";
-  let clean = content.trim();
-  if (tagToClean) {
-    const cleanRegex = new RegExp(`^(\\[${tagToClean}\\]|-?\\s*\\[${tagToClean}\\])\\s*`, "i");
-    clean = clean.replace(cleanRegex, "").trim();
+  const regex = /\[(핵심\s*아이디어|핵심개념|핵심질문|수행평가\s*내용|수행평가|수행지시어)\]([\s\S]*?)(?=\[(?:핵심\s*아이디어|핵심개념|핵심질문|수행평가\s*내용|수행평가|수행지시어)\]|$)/g;
+  const sections: Record<string, string> = {};
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    const normKey = match[1].replace(/\s+/g, "");
+    sections[normKey] = match[2].trim();
   }
-  const lines = clean.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
-  const formatted = lines.map((line) => {
-    if (line.startsWith("-") || line.startsWith("•") || /^\d+[\.\)]/.test(line)) {
-      return line;
-    }
-    return `- ${line}`;
-  });
-  return formatted.join("\n");
+  return sections;
 }
 
 // Helper to extract core idea from existing topic string
@@ -118,16 +36,6 @@ export function extractCoreIdea(topic: string): string {
     return topic.split(ideaSplitRegex)[1].trim();
   }
   return "";
-}
-
-// Helper to extract base topic/unit without [핵심 아이디어]
-export function extractBaseTopic(topic: string): string {
-  if (!topic) return "";
-  const ideaSplitRegex = /\[핵심\s*아이디어\]/i;
-  if (ideaSplitRegex.test(topic)) {
-    return topic.split(ideaSplitRegex)[0].trim();
-  }
-  return topic.trim();
 }
 
 // Function to safely inject or update [핵심 아이디어] in topic column while preserving base unit name
@@ -200,15 +108,15 @@ export function buildDefaultPerfWeekDetail(
       .filter((s) => s.length > 2);
 
     if (cleanedSteps.length > 0) {
-      summary = `${cleanedSteps.slice(0, 4).join(" → ")} 과정을 단계별로 수행하고 탐구 결과를 종합 분석하여 보고서로 작성함.`;
+      summary = `${cleanedSteps.slice(0, 3).join(", ")} 과정을 거쳐 탐구 과제를 수행하고 결과를 분석하여 보고서로 작성한다.`;
     }
   }
 
   if (!summary) {
     if (perfName.includes("분자") || perfName.includes("입체 구조")) {
-      summary = "분자의 3차원 입체 구조를 모델링하고 결합의 극성과 분자의 기하학적 대칭성을 종합하여 극성 유무 및 물리적 성질과의 관계를 분석한 보고서를 작성한다.";
+      summary = "분자의 입체 구조를 모델링하고 결합의 극성과 물질의 성질 간 관계를 분석하여 보고서로 작성한다.";
     } else if (perfName.includes("중화") || perfName.includes("농도") || perfName.includes("적정")) {
-      summary = "중화 반응의 양적 관계와 적정 원리를 바탕으로 표준용액을 활용한 실험을 정밀하게 수행하고 미지 농도를 산출 및 오차를 분석하여 보고서로 작성한다.";
+      summary = "중화 반응의 양적 관계와 적정 원리를 바탕으로 표준용액을 활용한 실험을 수행하고 미지 농도를 산출하여 보고서로 작성한다.";
     } else {
       summary = `${perfName || "수행평가"} 과제를 단계별로 수행하여 관련 개념을 적용하고 탐구 결과를 분석하여 정리한다.`;
     }
@@ -242,10 +150,6 @@ export function buildDefaultFormativeWeekDetail(
   if (isEven) {
     parts.push(`[핵심개념]\n관련 단원 주요 개념 원리 및 형성평가 점검 요소`);
   }
-
-  parts.push(`[형성평가]\n- 다음 주 [${perfName}] 대비 사전 실험 절차 및 핵심 탐구 요소를 점검하는 모의 탐구 활동을 수행함.`);
-  parts.push(`[피드백 전략]\n- 성취기준 핵심 개념 형성평가 문항을 풀이하고 오개념 진단 체크리스트를 통한 교사 즉각 피드백을 제공함.`);
-  parts.push(`[학생 맞춤형 개별화 전략]\n- 탐구 설계 및 계산에 어려움이 있는 학생에게 단계별 힌트 카드 및 동료 멘토링을 지원함.`);
   parts.push(`[수행지시어]\n비교하다, 유추하다, 적용하다, 확인하다`);
 
   return parts.join("\n\n");
@@ -885,10 +789,12 @@ export const Step4WeeklySchedule: React.FC<Step4WeeklyScheduleProps> = ({
     });
   };
 
-  // Batch Multi-Week AI Generator function
+  // Batch Multi-Week AI Generator function: processes up to 4-5 weeks in a single Gemini request
   const generateBatchWeeksContent = async (
     itemsWithIdx: { idx: number; item: ScheduleItem }[]
   ): Promise<Record<number, { topic: string; detail: string }>> => {
+    if (itemsWithIdx.length === 0) return {};
+
     const { formativeWeekIndices, formativeNextPerfMap } = getScheduleAssessmentContext(data.schedules, data);
 
     const weekBlocksPrompt = itemsWithIdx
@@ -897,167 +803,128 @@ export const Step4WeeklySchedule: React.FC<Step4WeeklyScheduleProps> = ({
         const isEven = weekNum % 2 === 0;
         const overlappingPerfs = item.weekDate ? getOverlappingPerformancesForWeek(item.weekDate, data) : [];
         const isPerfWeek = overlappingPerfs.length > 0;
-        const isFormativeWeek = !isPerfWeek && formativeWeekIndices.has(idx);
+        const isFormativeWeek = formativeWeekIndices.has(idx);
         const upcomingPerf = formativeNextPerfMap.get(idx);
+        const typeStr = item.type || "";
+        const isExamWeek =
+          typeStr.includes("중간시험") ||
+          typeStr.includes("기말시험") ||
+          typeStr.includes("지필평가") ||
+          typeStr.includes("정기시험");
 
-        let weekTypeDesc = `[일반 수업 주간] (${isEven ? "짝수주: 성취기준별 핵심질문(각 하위 학습활동 포함), 핵심개념, 탐구활동, 피드백 전략, 학생 맞춤형 개별화 전략 포함" : "홀수주: 성취기준별 핵심질문(각 하위 학습활동 포함), 탐구활동, 피드백 전략, 학생 맞춤형 개별화 전략 포함 / 핵심개념 제외"})`;
-        if (isPerfWeek) {
-          weekTypeDesc = `[수행평가 실시 주간] (평가명: ${overlappingPerfs.map((p) => p.name).join(", ")} / ★핵심질문·핵심개념 제외하고 [수행평가 내용]과 [수행지시어]만 작성)`;
-        } else if (isFormativeWeek && upcomingPerf) {
-          weekTypeDesc = `[형성평가 주간 - 다음 주 수행평가 대비] (다음 주 평가명: ${upcomingPerf.name}, 흐름: ${upcomingPerf.flow} / 핵심질문, ${isEven ? "핵심개념, " : ""}형성평가, 피드백 전략, 학생 맞춤형 개별화 전략, 수행지시어 포함)`;
-        }
-
-        const rawTopic = extractBaseTopic(item.topic || "");
-
-        // Extract structured achievement standards with code & full text
-        const stdItems = getAchievementStandardsWithText(
+        const stdText = getExpandedStdText(
           item.std,
           data.curriculumFullText,
           data.curriculumSubjects,
           data.curriculumSelectedOriginalIdx
         );
+        const baseTopic = (item.topic || "").split(/\[핵심\s*아이디어\]/i)[0].trim();
 
-        // Requirement 8: Warn in console if topic name might conflict with achievement standards
-        if (rawTopic && stdItems.length > 0) {
-          console.warn("주차 단원명과 성취기준의 내용 불일치 가능성 검토:", {
-            week: weekNum,
-            topic: rawTopic,
-            standards: stdItems.map((s) => `[${s.code}] ${s.text}`),
-          });
+        let weekTypeDescription = "일반 수업 주간";
+        let specificNotes = "";
+
+        if (isPerfWeek) {
+          weekTypeDescription = "수행평가 실시 주간";
+          specificNotes = overlappingPerfs
+            .map((p) => {
+              const pStdText = getExpandedStdText(
+                p.std || item.std,
+                data.curriculumFullText,
+                data.curriculumSubjects,
+                data.curriculumSelectedOriginalIdx
+              );
+              return `  * [실시 수행평가]: 수행평가 ${p.perfIndex} (${p.name || `수행평가 ${p.perfIndex}`}) / 과제흐름: ${p.flow || "탐구 보고서 작성"} / 성취기준: ${pStdText}`;
+            })
+            .join("\n");
+        } else if (isFormativeWeek && upcomingPerf) {
+          weekTypeDescription = "형성평가 주간 (다음 주 수행평가 전주 연동)";
+          const nextStdText = getExpandedStdText(
+            upcomingPerf.std,
+            data.curriculumFullText,
+            data.curriculumSubjects,
+            data.curriculumSelectedOriginalIdx
+          );
+          specificNotes = `  * [다음 주 실시 예정 수행평가]: 수행평가 ${upcomingPerf.perfIndex} (${upcomingPerf.name || `수행평가 ${upcomingPerf.perfIndex}`}) / 과제흐름: ${upcomingPerf.flow || "탐구 과제"} / 성취기준: ${nextStdText}`;
+        } else if (isExamWeek) {
+          weekTypeDescription = "정기 지필평가(시험) 주간";
         }
 
-        const stdLines =
-          stdItems.length > 0
-            ? stdItems
-                .map((s, sIdx) => `  [성취기준 ${sIdx + 1}] 코드: [${s.code}], 원문: "${s.text}"`)
-                .join("\n")
-            : `  [성취기준] 코드: ${item.std || "미지정"}`;
-
-        return `<<<WEEK_${weekNum}>>>
-- 주차 번호 (weekNumber): ${weekNum}주차 (${item.weekLabel})
-- 주간 유형: ${weekTypeDesc}
-- 단원/주제 참고: ${rawTopic || "미지정"} (※ 단원명과 성취기준 원문이 상충될 경우 무조건 성취기준 원문이 최우선)
-- 배정된 성취기준 원문 (achievementStandards - ★수업 설계의 유일하고 절대적인 내용 근거):
-${stdLines}
-<<<END_WEEK_${weekNum}>>>`;
+        return `### [WEEK_${idx + 1}]
+- 주차 라벨: ${item.weekLabel} (${isEven ? "짝수주: 핵심개념 포함 필수" : "홀수주: 핵심개념 제외"})
+- 시수: ${item.hours}시간
+- 단원명: ${baseTopic || "(단원 미지정)"}
+- 성취기준: ${stdText || "(성취기준 미지정)"}
+- 평가 유형: ${item.type || "형성평가"}
+- 주차 유형: ${weekTypeDescription}${specificNotes ? `\n${specificNotes}` : ""}`;
       })
       .join("\n\n");
 
     const prompt = `너는 대한민국 2022 개정 교육과정 기반 고등학교 수업 및 평가 설계 전문가야.
-오직 아래 주차별로 제공된 [배정된 성취기준 원문]만을 단독 내용 근거로 삼아, 각 주차의 [핵심 아이디어]와 [평가와 연계한 수업 세부 방법]을 작성해줘.
-
-★ [가장 중요한 원칙 - 성취기준 최우선 원칙] ★
-각 주차의 수업 세부 방법은 반드시 「그 주차에 배정된 성취기준 코드 + 성취기준 원문」을 유일한 출발점으로 작성해야 합니다.
-생성 순서: 현재 주차 성취기준 확인 → 성취기준 원문의 핵심 학습목표 분석 → 그 성취기준에 맞는 핵심질문 생성 → 그 성취기준을 달성하기 위한 학생 활동 생성 → 그 활동에 대한 피드백 전략 생성 → 탐구활동/개별화 전략 생성.
-
-1. 성취기준이 모든 내용의 최우선 기준:
-   - 첨부 예시 계획서나 다른 단원, 과거 작성 내용, 이전 교육과정의 수업 내용(예: 화학의 경우 성취기준과 무관한 반응속도, 엔탈피, 몰농도, 화학평형 등의 개념)을 절대 가져오지 마세요.
-   - 오직 해당 주차의 성취기준 원문에 기재된 학습목표, 핵심 개념, 용어, 행동 동사만을 꼼꼼히 분석하여 수업과 탐구, 피드백을 설계해야 합니다.
-   - 단원명이나 외부 지식보다 성취기준 원문이 항상 우선합니다.
-
-2. 성취기준별 핵심질문 (1:1 대응 원칙):
-   - 해당 주차에 배정된 성취기준이 1개이면 -> [핵심질문] 1개 작성
-   - 해당 주차에 배정된 성취기준이 2개이면 -> [핵심질문] 2개 작성
-   - 해당 주차에 배정된 성취기준이 3개이면 -> [핵심질문] 3개 작성
-   - 각 질문은 반드시 해당 성취기준 원문에서 직접 도출하고, 여러 성취기준을 하나의 질문으로 합치지 마세요.
-   - 각 [핵심질문] 바로 아래에는 해당 성취기준을 실제로 달성하기 위한 구체적인 학생 학습활동을 1~2개 (- 로 시작) 작성하세요. 성취기준 원문의 동사(예: 추론하다, 모형으로 나타내다, 계산하다, 비교하다, 예측하다 등)를 적극 활용하세요.
-
-3. [피드백 전략]도 성취기준 기반 작성:
-   - 일반적인 상투적 문장("추가 자료 제공", "피드백 제공")을 반복하지 마세요.
-   - 현재 주차 성취기준 개념 학습이나 탐구 활동 과정에서 학생이 어려워하거나 혼동할 수 있는 구체적인 오개념, 오류, 취약 지점을 명시하고 즉각적인 교사 피드백 환류 방안을 작성 (- 로 시작).
-
-4. [학생 맞춤형 개별화 전략]도 성취기준 기반 작성:
-   - 단순히 "추가 자료 제공"만 반복하지 말고, 현재 성취기준을 학습하기 어려운 학생에게 실질적으로 도움이 되는 방식(단계별 계산 자료, 구조 모형 자료, 시각화 자료, 개념 확인 문제, 심화 탐구 문제 등)으로 성취기준에 맞춤 작성 (- 로 시작).
-
-5. [핵심개념] 격주 작성 원칙:
-   - 짝수 주차(2, 4, 6, 8...): [핵심개념] 항목 작성 (성취기준에서 도출된 핵심 용어 2~4개 쉼표 구분)
-   - 홀수 주차(1, 3, 5, 7...): [핵심개념] 항목을 작성하지 않고 생략
-
-6. [수행평가 실시 주간] 및 [형성평가 주간]:
-   - [수행평가 실시 주간]: 핵심질문, 핵심개념은 제외하고 [수행평가 내용]과 [수행지시어]만 작성.
-   - [형성평가 주간 - 수행평가 전주]: 다음 주 수행평가 성공적 완수를 위한 사전 점검 주간으로, [핵심질문], (짝수주인 경우 [핵심개념]), [형성평가], [피드백 전략], [학생 맞춤형 개별화 전략], [수행지시어] 작성.
+아래 제공된 주차별 성취기준과 수업 및 평가 계획을 분석하여, 각 주차의 [핵심 아이디어]와 [평가와 연계한 수업 세부 방법]을 작성해줘.
 
 [과목명]
-${data.subjectName || "과목"}
+${data.subjectName || ""}
 
-[주차별 요청 목록]
+[주차별 정보]
 ${weekBlocksPrompt}
 
-[출력 형식 예시]
+[작성 규칙 - 절대 엄수]
+1. [핵심 아이디어] (모든 주차 공통):
+   - 시수가 있는 모든 주차에 대해 단원 및 성취기준을 아우르는 일반화된 원리나 개념적 통찰을 1~2문장으로 작성 (단원명 아래 topic에 반영됨).
 
-<<<WEEK_1>>> (※ 홀수주 일반 수업 / 성취기준 1개 예시)
+2. [수행평가 실시 주간]의 수업 세부 방법 (★규칙 엄수):
+   - 수행평가가 실제 실시되는 주차에는 [핵심질문], [핵심개념], 일반 수업 세부 방법, AI 활용 방안 등을 절대로 작성하지 마세요.
+   - 오직 아래 2가지만 작성할 것:
+     ① [수행평가 내용]: 앞의 「수행 과제 흐름」을 1~2문장으로 간단히 요약한 설명
+     ② [수행지시어]: 해당 수행평가 핵심 동사 4~5개 (예: 모델링하다, 분석하다, 추론하다, 설명하다)
+
+3. [형성평가 주간(수행평가 전주)]의 수업 세부 방법:
+   - ① [핵심질문]: 다음 주 수행평가 준비 및 성취기준 도달 점검 질문
+   - ② [핵심개념]: 짝수 주차인 경우만 작성 (홀수 주차는 제외)
+   - ③ [수행지시어]: 형성평가 점검 동사 4~5개 (예: 비교하다, 유추하다, 적용하다, 확인하다)
+
+4. [일반 수업 주간]의 수업 세부 방법:
+   - ① [핵심질문]: 성취기준 1개당 탐구 유도 질문 1개
+   - ② [핵심개념]: 짝수 주차인 경우만 작성 (홀수 주차는 제외)
+   - [수행지시어] 및 [수행평가 내용]은 절대 작성하지 마세요.
+
+[출력 형식 - 반드시 주차별 구분자를 지켜 출력할 것]
+<<<WEEK_1>>>
 [핵심 아이디어]
-원자의 전자 배치와 오비탈 구조는 주기율과 화학 결합의 성질을 결정한다.
+(1~2문장 개념적 통찰)
 
 [핵심질문]
-공유 전자쌍과 비공유 전자쌍의 배치는 분자의 구조에 어떤 영향을 미칠까?
-- 원자와 분자를 루이스 전자점식으로 표현하기
-- 전자쌍 반발 이론을 이용하여 분자의 입체 구조 추론하기
-
-[탐구활동]
-- 여러 분자의 전자쌍 배치와 입체 구조의 관계를 분자 모형으로 비교·분석함.
-
-[피드백 전략]
-- 전자쌍 수와 분자 구조를 연결하는 과정에서 나타나는 오개념을 확인하고 개별 피드백 제공함.
-
-[학생 맞춤형 개별화 전략]
-- 구조 추론이 어려운 학생에게 전자쌍 배치 모형 및 시각화 카드를 단계적으로 제공함.
+(성취기준 1개당 질문 1개)
 <<<END_WEEK_1>>>
 
-<<<WEEK_2>>> (※ 짝수주 일반 수업 / 성취기준 2개 예시)
+<<<WEEK_2>>>
 [핵심 아이디어]
-분자의 구조와 결합의 극성은 물질의 물리적 성질과 분자 간 인력을 결정한다.
+(1~2문장)
 
 [핵심질문]
-분자의 입체 구조와 대칭성은 분자의 극성 유무를 어떻게 결정하는가?
-- 분자의 결합 극성과 입체 구조를 결합하여 분자의 쌍극자 모멘트 유무 판단하기
-- 무극성 분자와 극성 분자의 구조적 특징 비교하기
+(성취기준 1개당 질문 1개)
 
-[핵심질문]
-분자 사이에 작용하는 인력의 종류는 물질의 끓는점과 어떤 상관관계를 가지는가?
-- 분자량과 극성에 따른 분산력 및 쌍극자-쌍극자 힘의 크기 비교하기
-- 다양한 물질의 끓는점 데이터를 분석하여 분자 간 힘의 세기 추론하기
-
-[핵심개념]
-결합의 극성, 쌍극자 모멘트, 분산력, 수소 결합
-
-[탐구활동]
-- 분자 모형 프로그램과 물질 데이터 시트를 활용하여 구조에 따른 분자 간 인력과 끓는점의 관계를 도출함.
-
-[피드백 전략]
-- 결합의 극성과 분자의 극성을 혼동하는 학생에게 벡터 합 개념을 적용한 개별 첨삭 피드백을 실시함.
-
-[학생 맞춤형 개별화 전략]
-- 분자 구조 공간 지각이 미흡한 학생에게 3D 분자 모형 교구를 제공하고, 심화 학생에게는 수소 결합의 비정상적 끓는점 해석 과제를 부여함.
+[핵심개념] (※ 짝수주이므로 작성)
+(주요 개념 키워드 및 원리)
 <<<END_WEEK_2>>>
 
 <<<WEEK_3>>> (※ 수행평가 전주 형성평가 주간 예시)
 [핵심 아이디어]
-화학 반응에서 물질의 양적 관계와 농도는 반응의 효율성을 결정한다.
+(1~2문장)
 
 [핵심질문]
-다음 주 실시될 중화 적정 수행평가에 대비하여 표준용액 조제 및 중화 반응의 양적 관계를 어떻게 점검할 것인가?
-- 표준용액 제조 절차 및 몰농도 계산 점검하기
-
-[형성평가]
-- 다음 주 실시될 [수행평가 2: 중화 적정]에 대비하여 표준용액 제조 절차 및 양적 관계(nV=n'V') 계산을 모의 점검함.
-
-[피드백 전략]
-- 실험 기구(뷰렛, 피펫)의 조작법 및 종말점 변색 판정 기준에 대한 자기 점검 체크리스트를 실시하고 교사 피드백을 제공함.
-
-[학생 맞춤형 개별화 전략]
-- 농도 환산 및 적정 공식 적용이 미숙한 학생에게 단계별 힌트 시트를 제공함.
+(다음 주 수행평가 대비 점검 질문)
 
 [수행지시어]
 비교하다, 유추하다, 적용하다, 확인하다
 <<<END_WEEK_3>>>
 
-<<<WEEK_4>>> (※ 수행평가 실시 주간 예시)
+<<<WEEK_4>>> (※ 수행평가 실시 주간 예시 - 핵심질문/개념 제외, 내용과 지시어만 작성)
 [핵심 아이디어]
-분자의 기하학적 구조와 전하 분포는 물질의 화학적·물리적 성질을 지배한다.
+(1~2문장)
 
 [수행평가 내용]
-분자의 3차원 입체 구조를 모델링하고 결합의 극성과 분자의 기하학적 대칭성을 종합하여 극성 유무 및 물리적 성질과의 관계를 분석한 보고서를 작성한다.
+분자의 입체 구조를 모델링하고 극성과 물질의 성질 간 관계를 분석하여 결과를 보고서로 작성한다.
 
 [수행지시어]
 모델링하다, 분석하다, 추론하다, 설명하다
@@ -1078,20 +945,13 @@ ${weekBlocksPrompt}
         const isFormativeWeek = !isPerfWeek && formativeWeekIndices.has(idx);
         const upcomingPerf = formativeNextPerfMap.get(idx);
 
-        const stdItems = getAchievementStandardsWithText(
-          item.std,
-          data.curriculumFullText,
-          data.curriculumSubjects,
-          data.curriculumSelectedOriginalIdx
-        );
-
         const weekTagRegex = new RegExp(`<<<WEEK_${weekNum}>>>([\\s\\S]*?)<<<END_WEEK_${weekNum}>>>`, "i");
         const match = generated.match(weekTagRegex);
         const weekContent = match ? match[1].trim() : "";
 
         if (weekContent) {
-          const parsed = parseWeekDetailSections(weekContent);
-          const generatedIdea = parsed.coreIdea || "";
+          const parsed = parseSections(weekContent);
+          const generatedIdea = parsed["핵심아이디어"] || "";
 
           let updatedTopic = item.topic || "";
           if (generatedIdea) {
@@ -1102,7 +962,7 @@ ${weekBlocksPrompt}
 
           if (isPerfWeek) {
             // [수행평가 실시 주간]: 핵심질문/개념 제외, 수행평가 내용 + 수행지시어만 포함
-            let perfSummary = parsed.perfContent;
+            let perfSummary = parsed["수행평가내용"] || parsed["수행평가"];
             if (!perfSummary) {
               const defaultPerfDetail = buildDefaultPerfWeekDetail(overlappingPerfs, data);
               const matchSummary = defaultPerfDetail.match(/\[수행평가 내용\]([\s\S]*?)(?=\[수행지시어\]|$)/i);
@@ -1112,82 +972,40 @@ ${weekBlocksPrompt}
             }
             parts.push(`[수행평가 내용]\n${perfSummary}`);
 
-            const actionVerbs = parsed.perfDirectives || "모델링하다, 분석하다, 추론하다, 설명하다";
+            const actionVerbs = parsed["수행지시어"] || "모델링하다, 분석하다, 추론하다, 설명하다";
             parts.push(`[수행지시어]\n${actionVerbs}`);
           } else if (isFormativeWeek) {
-            // [형성평가 주간]: 핵심질문 + (짝수주 핵심개념) + 형성평가 + 피드백 전략 + 학생 맞춤형 개별화 전략 + 수행지시어
-            if (parsed.coreQuestions.length > 0) {
-              parsed.coreQuestions.forEach((q) => {
-                parts.push(`[핵심질문]\n${q}`);
-              });
+            // [형성평가 주간]: 핵심질문 + (짝수주 핵심개념) + 수행지시어
+            if (parsed["핵심질문"]) {
+              parts.push(`[핵심질문]\n${parsed["핵심질문"]}`);
             } else {
               parts.push(`[핵심질문]\n다음 주 실시될 수행평가의 성공적 수행과 성취기준 도달을 위해 핵심 개념과 원리를 어떻게 점검할 것인가?`);
             }
 
             if (isEven) {
-              if (parsed.coreConcept) {
-                parts.push(`[핵심개념]\n${parsed.coreConcept}`);
+              if (parsed["핵심개념"]) {
+                parts.push(`[핵심개념]\n${parsed["핵심개념"]}`);
               } else {
                 parts.push(`[핵심개념]\n관련 단원 주요 개념 및 형성평가 점검 요소`);
               }
             }
 
-            const formativeContent = parsed.formativeAssessment || parsed.inquiryActivity;
-            if (formativeContent) {
-              parts.push(`[형성평가]\n${formatBulletItems(formativeContent, "형성평가")}`);
-            }
-
-            if (parsed.feedbackStrategy) {
-              parts.push(`[피드백 전략]\n${formatBulletItems(parsed.feedbackStrategy, "피드백")}`);
-            }
-
-            if (parsed.individualStrategy) {
-              parts.push(`[학생 맞춤형 개별화 전략]\n${formatBulletItems(parsed.individualStrategy, "개별화")}`);
-            }
-
-            const actionVerbs = parsed.perfDirectives || "비교하다, 유추하다, 적용하다, 확인하다";
+            const actionVerbs = parsed["수행지시어"] || "비교하다, 유추하다, 적용하다, 확인하다";
             parts.push(`[수행지시어]\n${actionVerbs}`);
           } else {
-            // [일반 수업 주간]:
-            // 1. 성취기준별 핵심질문들 (각 핵심질문 아래 학생 활동 목록 포함)
-            if (parsed.coreQuestions.length > 0) {
-              parsed.coreQuestions.forEach((q) => {
-                parts.push(`[핵심질문]\n${q}`);
-              });
+            // [일반 수업 주간]: 핵심질문 + (짝수주 핵심개념)
+            if (parsed["핵심질문"]) {
+              parts.push(`[핵심질문]\n${parsed["핵심질문"]}`);
             } else {
-              if (stdItems.length > 0) {
-                stdItems.forEach((std) => {
-                  parts.push(
-                    `[핵심질문]\n[${std.code}] 성취기준 도달을 위해 주요 개념과 원리를 어떻게 탐구하고 설명할 수 있는가?\n- 성취기준 관련 개념 탐구 및 자료 분석하기`
-                  );
-                });
-              } else {
-                parts.push(`[핵심질문]\n성취기준 도달을 위한 탐구 활동을 통해 주요 개념과 원리를 어떻게 도출하고 설명할 수 있는가?\n- 단원 핵심 탐구 및 모둠별 분석 활동 수행하기`);
-              }
+              parts.push(`[핵심질문]\n성취기준 도달을 위한 탐구 활동을 통해 주요 개념과 원리를 어떻게 도출하고 설명할 수 있는가?`);
             }
 
-            // 2. 짝수주 핵심개념
             if (isEven) {
-              if (parsed.coreConcept) {
-                parts.push(`[핵심개념]\n${parsed.coreConcept}`);
+              if (parsed["핵심개념"]) {
+                parts.push(`[핵심개념]\n${parsed["핵심개념"]}`);
               } else {
                 parts.push(`[핵심개념]\n관련 단원의 주요 개념 및 원리`);
               }
-            }
-
-            // 3. 탐구활동 (필요 시)
-            if (parsed.inquiryActivity) {
-              parts.push(`[탐구활동]\n${formatBulletItems(parsed.inquiryActivity, "탐구활동")}`);
-            }
-
-            // 4. 피드백 전략 (성취기준 기반)
-            if (parsed.feedbackStrategy) {
-              parts.push(`[피드백 전략]\n${formatBulletItems(parsed.feedbackStrategy, "피드백")}`);
-            }
-
-            // 5. 학생 맞춤형 개별화 전략 (성취기준 기반)
-            if (parsed.individualStrategy) {
-              parts.push(`[학생 맞춤형 개별화 전략]\n${formatBulletItems(parsed.individualStrategy, "개별화")}`);
             }
           }
 
@@ -1201,17 +1019,7 @@ ${weekBlocksPrompt}
           } else if (isFormativeWeek) {
             fallbackDetail = buildDefaultFormativeWeekDetail(upcomingPerf, data, isEven);
           } else {
-            const fallbackQuestions =
-              stdItems.length > 0
-                ? stdItems
-                    .map(
-                      (std) =>
-                        `[핵심질문]\n[${std.code}] 성취기준 도달을 위해 주요 개념과 원리를 어떻게 탐구하고 설명할 수 있는가?\n- ${std.text.slice(0, 30)} 관련 탐구 활동 수행하기`
-                    )
-                    .join("\n\n")
-                : `[핵심질문]\n성취기준 도달을 위한 핵심 탐구 질문\n- 성취기준 관련 개념 탐구 활동 및 모둠별 데이터 분석을 수행함.`;
-
-            fallbackDetail = `${fallbackQuestions}${isEven ? `\n\n[핵심개념]\n단원 핵심 개념 및 원리` : ""}\n\n[피드백 전략]\n- 성취기준 관련 오개념 점검 및 맞춤형 피드백을 제공함.\n\n[학생 맞춤형 개별화 전략]\n- 개별 맞춤형 보조자료 및 힌트 카드를 지원함.`;
+            fallbackDetail = `[핵심질문]\n성취기준 도달을 위한 핵심 탐구 질문${isEven ? `\n\n[핵심개념]\n단원 핵심 개념 및 원리` : ""}`;
           }
           results[idx] = {
             topic: item.topic || "",

@@ -1,6 +1,9 @@
-import React, { useMemo } from "react";
-import { PlanData } from "../types";
-import { buildFinalPreviewData, FinalPreviewRubricCriterion } from "../utils/finalPreviewData";
+import React from "react";
+import { PlanData, RubricCriterion } from "../types";
+import { FIXED_SCHOOL_NAME, FIXED_YEAR_SEMESTER, getKoreanPrefix } from "../constants";
+import { formatStdCodesForDisplay, getExpandedStdText } from "../utils/hwpParser";
+import { formatDateRangeDisplay, getOverlappingRegularExamForWeek } from "../utils/dateUtils";
+import { getAchievementTable, isFirstGrade, isThreeTier } from "../utils/achievementUtils";
 
 interface DocumentPreviewProps {
   data: PlanData;
@@ -15,18 +18,15 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
   viewMode,
   onViewModeChange,
 }) => {
-  // Single canonical source of truth for preview and exports
-  const preview = useMemo(() => buildFinalPreviewData(data), [data]);
-  const is1stGrade = preview.semesterAchievementLevels.isFirstGrade;
-  const is3Tier = preview.semesterAchievementLevels.isThreeTier;
-
+  const is1stGrade = isFirstGrade(data.grade);
+  const is3Tier = isThreeTier(data.gradeType);
   const isShowSection = (secNum: number) => {
     if (viewMode === "full") return true;
     return currentStep === secNum;
   };
 
   // Helper for rendering structured rubric tables in preview
-  const renderRubricTable = (criteria: FinalPreviewRubricCriterion[], note: string) => {
+  const renderRubricTable = (criteria: RubricCriterion[], note: string) => {
     if (!criteria || criteria.length === 0) {
       return (
         <div className="text-[8pt] text-slate-400 italic py-1">
@@ -49,7 +49,7 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
           <tbody>
             {criteria.map((c, cIdx) => {
               const sortedLevels = [...c.levels].sort((a, b) => b.score - a.score);
-              const maxScore = c.maxScore;
+              const maxScore = sortedLevels.length ? sortedLevels[0].score : 0;
 
               return sortedLevels.map((lv, lIdx) => (
                 <tr key={`${cIdx}-${lIdx}`}>
@@ -119,38 +119,38 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
           {isShowSection(1) && (
             <div id="pv-step-1" className="pv-section space-y-3">
               <div className="text-center font-bold text-base md:text-lg tracking-tight border-b-2 border-slate-900 pb-2 mb-3 leading-snug break-keep">
-                <span>{preview.basicInfo.documentTitle}</span>
+                <span>{FIXED_YEAR_SEMESTER}</span> [<span>{data.subjectName || "과목명"}</span>]과 교수학습 및 평가 운영 계획
               </div>
 
               <table className="doc-table">
                 <tbody>
                   <tr>
                     <th style={{ width: "14%" }}>학교명</th>
-                    <td style={{ width: "20%" }}>{preview.basicInfo.schoolName}</td>
+                    <td style={{ width: "20%" }}>{FIXED_SCHOOL_NAME}</td>
                     <th style={{ width: "10%" }}>학년</th>
-                    <td style={{ width: "10%" }}>{preview.basicInfo.grade}</td>
+                    <td style={{ width: "10%" }}>{data.grade || "-"}</td>
                     <th style={{ width: "10%" }}>학점</th>
-                    <td style={{ width: "10%" }}>{preview.basicInfo.credit}</td>
+                    <td style={{ width: "10%" }}>{data.credit || "-"}</td>
                     <th style={{ width: "12%" }}>성취도</th>
-                    <td style={{ width: "14%" }}>{preview.basicInfo.gradeType}</td>
+                    <td style={{ width: "14%" }}>{data.gradeType || "-"}</td>
                   </tr>
                   <tr>
                     <th>기준학급</th>
-                    <td colSpan={3}>{preview.basicInfo.classDays}</td>
+                    <td colSpan={3}>{data.classDays || "-"}</td>
                     <th>지도교사</th>
-                    <td colSpan={3}>{preview.basicInfo.teacher}</td>
+                    <td colSpan={3}>{data.teacher || "-"}</td>
                   </tr>
                 </tbody>
               </table>
 
               <div className="font-bold text-sm text-slate-900 mt-2 mb-1 flex items-center gap-1 border-b border-slate-300 pb-1">
-                <span>{preview.basicInfo.section1Title}</span>
+                <span>1</span> [<span>{data.subjectName || "교과"}</span>]과 평가 계획
               </div>
 
               <div className="text-[9pt] font-bold text-slate-800 mb-1">1. 평가 목적 및 평가 방향, 평가 방침</div>
               <div className="text-[8pt] leading-relaxed whitespace-pre-line text-slate-800 bg-slate-50/70 p-3 rounded border border-slate-300">
-                {preview.evaluationPolicy.items.length > 0 ? (
-                  preview.evaluationPolicy.fullText
+                {data.policyItems && data.policyItems.length > 0 ? (
+                  data.policyItems.map((item, idx) => `${getKoreanPrefix(idx)}. ${item}`).join("\n\n")
                 ) : (
                   <span className="text-slate-400">- 평가 방침이 작성되지 않았습니다 -</span>
                 )}
@@ -169,130 +169,149 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
                 <tbody>
                   <tr>
                     <th style={{ width: "14%" }}>평가 유형</th>
-                    {preview.evaluationOverview.examCount > 0 && (
-                      <td colSpan={preview.evaluationOverview.examCount * 3} style={{ fontWeight: "bold" }}>
-                        정기시험 ({preview.evaluationOverview.examRatio}%)
+                    {data.examCount > 0 && (
+                      <td colSpan={data.examCount * 3} style={{ fontWeight: "bold" }}>
+                        정기시험 ({data.examRatio}%)
                       </td>
                     )}
-                    {preview.evaluationOverview.perfCount > 0 && (
-                      <td colSpan={preview.evaluationOverview.perfCount} style={{ fontWeight: "bold" }}>
-                        수행평가 ({preview.evaluationOverview.performanceRatio}%)
+                    {data.perfCount > 0 && (
+                      <td colSpan={data.perfCount} style={{ fontWeight: "bold" }}>
+                        수행평가 ({data.performanceRatio}%)
                       </td>
                     )}
                   </tr>
                   <tr>
                     <th>횟수/영역</th>
-                    {preview.evaluationOverview.regularExams.map((exam) => (
-                      <td key={exam.id} colSpan={3} className="font-semibold">
-                        {exam.name}
-                      </td>
-                    ))}
-                    {preview.evaluationOverview.performanceAssessments.map((perf) => (
-                      <td key={perf.id} className="font-semibold">
-                        {perf.name}
-                      </td>
-                    ))}
+                    {data.examCount >= 1 && <td colSpan={3} className="font-semibold">{data.examName1 || "중간시험"}</td>}
+                    {data.examCount >= 2 && <td colSpan={3} className="font-semibold">{data.examName2 || "기말시험"}</td>}
+                    {Array.from({ length: data.perfCount }).map((_, i) => {
+                      const num = i + 1;
+                      const name = String(data[`perf${num}Name` as keyof PlanData] || `수행평가 ${num}`);
+                      return <td key={i} className="font-semibold">{name}</td>;
+                    })}
                   </tr>
                   <tr>
                     <th>문항 유형</th>
-                    {preview.evaluationOverview.regularExams.map((exam) => (
-                      <React.Fragment key={exam.id}>
+                    {data.examCount >= 1 && (
+                      <>
                         <td>선택형</td>
                         <td>단답형</td>
                         <td>서·논술형</td>
-                      </React.Fragment>
-                    ))}
-                    {preview.evaluationOverview.performanceAssessments.map((perf) => (
-                      <td key={perf.id}>{perf.method}</td>
-                    ))}
+                      </>
+                    )}
+                    {data.examCount >= 2 && (
+                      <>
+                        <td>선택형</td>
+                        <td>단답형</td>
+                        <td>서·논술형</td>
+                      </>
+                    )}
+                    {Array.from({ length: data.perfCount }).map((_, i) => {
+                      const num = i + 1;
+                      const method = String(data[`perf${num}Method` as keyof PlanData] || "탐구형");
+                      return <td key={i}>{method}</td>;
+                    })}
                   </tr>
                   <tr>
                     <th>영역 만점</th>
-                    {preview.evaluationOverview.regularExams.map((exam) => (
-                      <React.Fragment key={exam.id}>
-                        <td>{exam.selective.score}점</td>
-                        <td>{exam.shortAnswer.score}점</td>
-                        <td>{exam.essay.score}점</td>
-                      </React.Fragment>
-                    ))}
-                    {preview.evaluationOverview.performanceAssessments.map((perf) => (
-                      <td key={perf.id}>{perf.totalScore}점</td>
-                    ))}
+                    {data.examCount >= 1 && (
+                      <>
+                        <td>{data.midSelectScore}점</td>
+                        <td>{data.midShortScore}점</td>
+                        <td>{data.midEssayScore}점</td>
+                      </>
+                    )}
+                    {data.examCount >= 2 && (
+                      <>
+                        <td>{data.finalSelectScore}점</td>
+                        <td>{data.finalShortScore}점</td>
+                        <td>{data.finalEssayScore}점</td>
+                      </>
+                    )}
+                    {Array.from({ length: data.perfCount }).map((_, i) => {
+                      const num = i + 1;
+                      const sc = Number(data[`perf${num}Score` as keyof PlanData] ?? 100);
+                      return <td key={i}>{sc}점</td>;
+                    })}
                   </tr>
                   <tr>
                     <th>반영 비율</th>
-                    {preview.evaluationOverview.regularExams.map((exam) => (
-                      <React.Fragment key={exam.id}>
-                        <td>{exam.selective.ratio}%</td>
-                        <td>{exam.shortAnswer.ratio}%</td>
-                        <td>{exam.essay.ratio}%</td>
-                      </React.Fragment>
-                    ))}
-                    {preview.evaluationOverview.performanceAssessments.map((perf) => (
-                      <td key={perf.id} className="font-semibold text-emerald-800">
-                        {perf.ratio}%
-                      </td>
-                    ))}
+                    {data.examCount >= 1 && (
+                      <>
+                        <td>{data.midSelectRatio}%</td>
+                        <td>{data.midShortRatio}%</td>
+                        <td>{data.midEssayRatio}%</td>
+                      </>
+                    )}
+                    {data.examCount >= 2 && (
+                      <>
+                        <td>{data.finalSelectRatio}%</td>
+                        <td>{data.finalShortRatio}%</td>
+                        <td>{data.finalEssayRatio}%</td>
+                      </>
+                    )}
+                    {Array.from({ length: data.perfCount }).map((_, i) => {
+                      const num = i + 1;
+                      const ratio = Number(data[`perf${num}Ratio` as keyof PlanData] || 0);
+                      return <td key={i} className="font-semibold text-emerald-800">{ratio}%</td>;
+                    })}
                   </tr>
                   <tr>
                     <th>교육과정 성취기준</th>
-                    {preview.evaluationOverview.regularExams.map((exam) => (
-                      <td key={exam.id} colSpan={3}>
-                        {exam.achievementStandards}
-                      </td>
-                    ))}
-                    {preview.evaluationOverview.performanceAssessments.map((perf) => (
-                      <td key={perf.id}>{perf.achievementStandards}</td>
-                    ))}
+                    {data.examCount >= 1 && <td colSpan={3}>{formatStdCodesForDisplay(data.midStd)}</td>}
+                    {data.examCount >= 2 && <td colSpan={3}>{formatStdCodesForDisplay(data.finalStd)}</td>}
+                    {Array.from({ length: data.perfCount }).map((_, i) => {
+                      const num = i + 1;
+                      const std = String(data[`perf${num}Std` as keyof PlanData] || "");
+                      return <td key={i}>{formatStdCodesForDisplay(std)}</td>;
+                    })}
                   </tr>
                   <tr>
                     <th>평가 시기</th>
-                    {preview.evaluationOverview.regularExams.map((exam) => (
-                      <td key={exam.id} colSpan={3}>
-                        {exam.period}
-                      </td>
-                    ))}
-                    {preview.evaluationOverview.performanceAssessments.map((perf) => (
-                      <td key={perf.id} className="text-[7.5pt]">
-                        {perf.period}
-                      </td>
-                    ))}
+                    {data.examCount >= 1 && <td colSpan={3}>{data.midTime || "-"}</td>}
+                    {data.examCount >= 2 && <td colSpan={3}>{data.finalTime || "-"}</td>}
+                    {Array.from({ length: data.perfCount }).map((_, i) => {
+                      const num = i + 1;
+                      const period = String(data[`perf${num}Period` as keyof PlanData] || "");
+                      return (
+                        <td key={i} className="text-[7.5pt]">
+                          {period || (i === 0 ? "10월 3째 주" : i === 1 ? "12월 2째 주" : "학기 중")}
+                        </td>
+                      );
+                    })}
                   </tr>
                   <tr>
                     <th>분할점수 처리</th>
-                    {preview.evaluationOverview.examCount > 0 && (
-                      <td colSpan={preview.evaluationOverview.examCount * 3}>
-                        {preview.evaluationOverview.splitTypeExam}
-                      </td>
-                    )}
-                    {preview.evaluationOverview.perfCount > 0 && (
-                      <td colSpan={preview.evaluationOverview.perfCount}>
-                        {preview.evaluationOverview.splitTypePerf}
-                      </td>
-                    )}
+                    {data.examCount > 0 && <td colSpan={data.examCount * 3}>{data.splitTypeExam}</td>}
+                    {data.perfCount > 0 && <td colSpan={data.perfCount}>{data.splitTypePerf}</td>}
                   </tr>
                 </tbody>
               </table>
 
               <div className="text-[9pt] font-bold text-slate-800 mt-2 mb-1">3. 성취율과 성취도</div>
-              <table className="doc-table">
-                <tbody>
-                  <tr>
-                    <th style={{ width: "20%" }}>성취율</th>
-                    {preview.evaluationOverview.achievementScaleTable.map((item, idx) => (
-                      <td key={idx}>{item.rate}</td>
-                    ))}
-                  </tr>
-                  <tr>
-                    <th>성취도</th>
-                    {preview.evaluationOverview.achievementScaleTable.map((item, idx) => (
-                      <td key={idx} className="font-bold text-slate-900">
-                        {item.level}
-                      </td>
-                    ))}
-                  </tr>
-                </tbody>
-              </table>
+              {(() => {
+                const achievementItems = getAchievementTable(data.grade, data.gradeType);
+                return (
+                  <table className="doc-table">
+                    <tbody>
+                      <tr>
+                        <th style={{ width: "20%" }}>성취율</th>
+                        {achievementItems.map((item, idx) => (
+                          <td key={idx}>{item.rate}</td>
+                        ))}
+                      </tr>
+                      <tr>
+                        <th>성취도</th>
+                        {achievementItems.map((item, idx) => (
+                          <td key={idx} className="font-bold text-slate-900">
+                            {item.level}
+                          </td>
+                        ))}
+                      </tr>
+                    </tbody>
+                  </table>
+                );
+              })()}
             </div>
           )}
 
@@ -303,36 +322,59 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
                 4. 수행평가 세부 계획
               </div>
 
-              {preview.performanceAssessments.map((perf) => (
-                <div key={perf.num} className="space-y-1.5 pt-1">
-                  <div className="font-bold text-[8.5pt] text-slate-900">
-                    {perf.prefix}. <span>{perf.name}</span>
+              {Array.from({ length: data.perfCount || 1 }).map((_, i) => {
+                const num = i + 1;
+                const prefix = getKoreanPrefix(i);
+                const name = String(data[`perf${num}Name` as keyof PlanData] || `수행평가 ${num}`);
+                const stdCodes = String(data[`perf${num}Std` as keyof PlanData] || "");
+                const stdFull = getExpandedStdText(
+                  stdCodes,
+                  data.curriculumFullText,
+                  data.curriculumSubjects,
+                  data.curriculumSelectedOriginalIdx
+                );
+                const flow = String(data[`perf${num}Flow` as keyof PlanData] || "-");
+                const ai = String(data[`perf${num}Ai` as keyof PlanData] || "-");
+                const criteria = (data[`perf${num}RubricCriteria` as keyof PlanData] as RubricCriterion[]) || [];
+                const note = String(data[`perf${num}Note` as keyof PlanData] ?? "");
+                const startDate = String(data[`perf${num}StartDate` as keyof PlanData] || "");
+                const endDate = String(data[`perf${num}EndDate` as keyof PlanData] || "");
+                const period = String(data[`perf${num}Period` as keyof PlanData] || "");
+                const dateRange = formatDateRangeDisplay(startDate, endDate);
+
+                return (
+                  <div key={num} className="space-y-1.5 pt-1">
+                    <div className="font-bold text-[8.5pt] text-slate-900">
+                      {prefix}. <span>{name}</span>
+                    </div>
+                    <table className="doc-table">
+                      <tbody>
+                        <tr>
+                          <th style={{ width: "20%" }}>평가 시기</th>
+                          <td className="left text-[7.5pt]">
+                            {period || "학기 중"}
+                          </td>
+                        </tr>
+                        <tr>
+                          <th style={{ width: "20%" }}>성취기준</th>
+                          <td className="left text-[7.5pt] whitespace-pre-line leading-relaxed">
+                            {stdFull || formatStdCodesForDisplay(stdCodes)}
+                          </td>
+                        </tr>
+                        <tr>
+                          <th>수행 과제 흐름</th>
+                          <td className="left text-[7.5pt] whitespace-pre-line leading-relaxed">{flow}</td>
+                        </tr>
+                        <tr>
+                          <th>AI 활용 범위</th>
+                          <td className="left text-[7.5pt] whitespace-pre-line leading-relaxed">{ai}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                    {renderRubricTable(criteria, note)}
                   </div>
-                  <table className="doc-table">
-                    <tbody>
-                      <tr>
-                        <th style={{ width: "20%" }}>평가 시기</th>
-                        <td className="left text-[7.5pt]">{perf.period}</td>
-                      </tr>
-                      <tr>
-                        <th style={{ width: "20%" }}>성취기준</th>
-                        <td className="left text-[7.5pt] whitespace-pre-line leading-relaxed">
-                          {perf.achievementStandards}
-                        </td>
-                      </tr>
-                      <tr>
-                        <th>수행 과제 흐름</th>
-                        <td className="left text-[7.5pt] whitespace-pre-line leading-relaxed">{perf.taskFlow}</td>
-                      </tr>
-                      <tr>
-                        <th>AI 활용 범위</th>
-                        <td className="left text-[7.5pt] whitespace-pre-line leading-relaxed">{perf.aiUsagePolicy}</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                  {renderRubricTable(perf.rubrics, perf.note)}
-                </div>
-              ))}
+                );
+              })}
 
               <div className="text-[7.5pt] text-slate-700 bg-slate-50 p-2 rounded border border-slate-300 space-y-0.5 mt-2">
                 <div className="font-bold text-slate-900">5. 유의 사항 및 부정행위 처리 방침</div>
@@ -346,7 +388,7 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
           {isShowSection(4) && (
             <div id="pv-step-4" className="pv-section space-y-3">
               <div className="font-bold text-sm text-slate-900 border-b border-slate-300 pb-1">
-                2. [<span>{preview.basicInfo.subjectName || "교과"}</span>]과 교수학습-평가 방법 (주차별 계획)
+                2. [<span>{data.subjectName || "교과"}</span>]과 교수학습-평가 방법 (주차별 계획)
               </div>
 
               <table className="doc-table">
@@ -361,7 +403,7 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
                   </tr>
                 </thead>
                 <tbody>
-                  {preview.weeklyPlan.map((item, idx) => (
+                  {data.schedules.map((item, idx) => (
                     <tr key={idx}>
                       <td className="text-[7.5pt]" style={{ lineHeight: "1.3" }}>
                         <div style={{ fontWeight: 700, color: "#0f172a" }}>{item.weekLabel}</div>
@@ -385,10 +427,24 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
                       </td>
                       <td className="left text-[7.5pt] font-semibold whitespace-pre-line">{item.topic}</td>
                       <td className="left text-[7.5pt] whitespace-pre-line leading-relaxed">
-                        {item.achievementStandards}
+                        {(() => {
+                          const examInfo = item.weekDate ? getOverlappingRegularExamForWeek(item.weekDate, data) : null;
+                          if (examInfo) {
+                            const examStd = examInfo.type === "mid" ? data.midStd : data.finalStd;
+                            return formatStdCodesForDisplay(item.std || examStd || examInfo.std || "");
+                          }
+                          return (
+                            getExpandedStdText(
+                              item.std,
+                              data.curriculumFullText,
+                              data.curriculumSubjects,
+                              data.curriculumSelectedOriginalIdx
+                            ) || item.std || ""
+                          );
+                        })()}
                       </td>
-                      <td className="text-[7.5pt] font-medium whitespace-pre-line">{item.evaluationType}</td>
-                      <td className="left text-[7.5pt] whitespace-pre-line leading-relaxed">{item.teachingAndEvaluationDetails}</td>
+                      <td className="text-[7.5pt] font-medium whitespace-pre-line">{item.type}</td>
+                      <td className="left text-[7.5pt] whitespace-pre-line leading-relaxed">{item.detail}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -400,7 +456,7 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
           {isShowSection(5) && (
             <div id="pv-step-5" className="pv-section space-y-2">
               <div className="font-bold text-sm text-slate-900 border-b border-slate-300 pb-1">
-                3. [<span>{preview.basicInfo.subjectName || "교과"}</span>]과 학기 단위 성취수준
+                3. [<span>{data.subjectName || "교과"}</span>]과 학기 단위 성취수준
               </div>
 
               <div className="font-bold text-xs text-slate-800 mt-1">
@@ -409,9 +465,18 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
 
               {/* Guidance notes matching the official HWP template */}
               <div className="text-[7.5pt] text-blue-700 space-y-0.5 my-1">
-                {preview.semesterAchievementLevels.guidanceNotes.map((note, nIdx) => (
-                  <div key={nIdx}>{note}</div>
-                ))}
+                {is1stGrade && !is3Tier && (
+                  <>
+                    <div>※ 학기 단위의 성취수준은 한 학기 전체 성취기준을 포괄하는 수준에서 전반적인 이해와 수행 특성을 진술함.</div>
+                    <div>※ 1학년 공통과목은 최소능력수행특성을 포함하여 진술</div>
+                  </>
+                )}
+                {!is1stGrade && !is3Tier && (
+                  <div>※ 1학년 공통과목 외 과목은 학기단위 성취수준 진술(5단계)</div>
+                )}
+                {is3Tier && (
+                  <div>※ 1학년 공통과목 외 과목은 학기단위 성취수준 진술(3단계)</div>
+                )}
               </div>
 
               <table className="doc-table">
@@ -423,22 +488,36 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
                   </tr>
                 </thead>
                 <tbody>
-                  {preview.semesterAchievementLevels.levels.map((lvl) => (
-                    <tr key={lvl.level}>
-                      <td
-                        className={`font-bold text-center ${
-                          lvl.level === "A" ? "text-blue-700" : "text-slate-800"
-                        }`}
-                      >
-                        {lvl.level}
-                      </td>
-                      <td className="left text-[7.5pt] whitespace-pre-line leading-relaxed">
-                        {lvl.description}
-                      </td>
-                      <td className="text-center">{lvl.rate}</td>
-                    </tr>
-                  ))}
-                  {preview.semesterAchievementLevels.minCompetency && (
+                  <tr>
+                    <td className="font-bold text-blue-700 text-center">A</td>
+                    <td className="left text-[7.5pt] whitespace-pre-line leading-relaxed">{data.achieveA || "-"}</td>
+                    <td className="text-center">{is3Tier ? "80%이상" : "90%이상"}</td>
+                  </tr>
+                  <tr>
+                    <td className="font-bold text-slate-800 text-center">B</td>
+                    <td className="left text-[7.5pt] whitespace-pre-line leading-relaxed">{data.achieveB || "-"}</td>
+                    <td className="text-center">{is3Tier ? "60%이상 ~ 80%미만" : "80%이상 ~ 90%미만"}</td>
+                  </tr>
+                  <tr>
+                    <td className="font-bold text-slate-800 text-center">C</td>
+                    <td className="left text-[7.5pt] whitespace-pre-line leading-relaxed">{data.achieveC || "-"}</td>
+                    <td className="text-center">{is3Tier ? "60%미만" : "70%이상 ~ 80%미만"}</td>
+                  </tr>
+                  {!is3Tier && (
+                    <>
+                      <tr>
+                        <td className="font-bold text-slate-800 text-center">D</td>
+                        <td className="left text-[7.5pt] whitespace-pre-line leading-relaxed">{data.achieveD || "-"}</td>
+                        <td className="text-center">60%이상 ~ 70%미만</td>
+                      </tr>
+                      <tr>
+                        <td className="font-bold text-slate-800 text-center">E</td>
+                        <td className="left text-[7.5pt] whitespace-pre-line leading-relaxed">{data.achieveE || "-"}</td>
+                        <td className="text-center">{is1stGrade ? "40%이상 ~ 60%미만" : "60%미만"}</td>
+                      </tr>
+                    </>
+                  )}
+                  {is1stGrade && !is3Tier && (
                     <>
                       <tr>
                         <th colSpan={3} className="font-bold text-center bg-slate-100 text-[8pt] py-1">
@@ -447,7 +526,7 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
                       </tr>
                       <tr>
                         <td colSpan={3} className="left text-[7.5pt] whitespace-pre-line leading-relaxed py-2">
-                          {preview.semesterAchievementLevels.minCompetency}
+                          {data.minCompetency || "-"}
                         </td>
                       </tr>
                     </>
