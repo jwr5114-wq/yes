@@ -1,6 +1,6 @@
 import React, { useRef, useState } from "react";
 import { PlanData } from "../types";
-import { buildEvaluationPlanExportJson } from "../utils/exportPlanData";
+import { buildFinalPreviewData } from "../utils/finalPreviewData";
 import { fillHwpxTemplate, downloadBlob } from "../utils/hwpxWriter";
 import { X, FileUp, FileCheck2, AlertTriangle, Loader2, FileOutput } from "lucide-react";
 
@@ -33,8 +33,8 @@ export const HwpxExportModal: React.FC<HwpxExportModalProps> = ({ isOpen, onClos
     setWarnings(null);
     try {
       const buffer = await file.arrayBuffer();
-      const exportJson = buildEvaluationPlanExportJson(data);
-      const result = await fillHwpxTemplate(buffer, data, exportJson);
+      const previewData = buildFinalPreviewData(data);
+      const result = await fillHwpxTemplate(buffer, previewData);
       downloadBlob(result.blob, result.filename);
       setWarnings(result.warnings);
       if (showToast) {
@@ -60,8 +60,8 @@ export const HwpxExportModal: React.FC<HwpxExportModalProps> = ({ isOpen, onClos
               <FileOutput className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="font-bold text-sm sm:text-base leading-tight">원본 한글(HWPX) 서식으로 완성하기</h2>
-              <p className="text-xs text-slate-400 mt-0.5">학교 원본 양식의 표·서식은 그대로, 빈 칸만 채워 실제 .hwpx로 저장합니다.</p>
+              <h2 className="font-bold text-sm sm:text-base leading-tight">출력 전용 마스터 서식(HWPX)으로 완성하기</h2>
+              <p className="text-xs text-slate-400 mt-0.5">마스터 템플릿의 열 너비·셀 병합·테두리는 유지하고, 내용에 맞춰 행 높이 자동 확장 및 정규 장평(100%)·자간으로 저장합니다.</p>
             </div>
           </div>
           <button
@@ -77,7 +77,7 @@ export const HwpxExportModal: React.FC<HwpxExportModalProps> = ({ isOpen, onClos
           <div className="space-y-2">
             <div className="flex items-center gap-2 text-sm font-bold text-slate-800">
               <span className="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[10px]">1</span>
-              원본 HWP 서식 파일 선택 (.hwpx)
+              출력 전용 마스터 서식 파일 선택 (.hwpx)
             </div>
             <button
               type="button"
@@ -88,8 +88,8 @@ export const HwpxExportModal: React.FC<HwpxExportModalProps> = ({ isOpen, onClos
             >
               {file ? <FileCheck2 className="w-5 h-5 text-indigo-600 shrink-0" /> : <FileUp className="w-5 h-5 text-slate-400 shrink-0" />}
               <div className="min-w-0">
-                <div className="text-sm font-semibold text-slate-800 truncate">{file ? file.name : "학교 평가계획서 원본 .hwpx 파일을 선택하세요"}</div>
-                <div className="text-xs text-slate-500 mt-0.5">한글에서 저장할 때 파일 형식을 "HWPX"로 저장한 파일이어야 합니다.</div>
+                <div className="text-sm font-semibold text-slate-800 truncate">{file ? file.name : "수정하신 출력 전용 마스터 .hwpx 파일을 선택하세요"}</div>
+                <div className="text-xs text-slate-500 mt-0.5">열 너비·서식 유지 및 줄 수에 따른 행 높이 자동 확장이 적용됩니다.</div>
               </div>
             </button>
             <input

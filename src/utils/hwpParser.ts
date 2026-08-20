@@ -633,6 +633,68 @@ export function formatStdCodesForDisplay(rawStr: string): string {
   return groups.map((g) => (g.firstRaw === g.lastRaw ? `[${g.firstRaw}]` : `[${g.firstRaw}]~[${g.lastRaw}]`)).join(", ");
 }
 
+export function getAchievementStandardsWithText(
+  codesStr: string,
+  fullText?: string,
+  subjects?: Array<{ name: string; headingIndex: number }>,
+  subjectIdx?: number | null
+): Array<{ code: string; text: string }> {
+  if (!codesStr || !codesStr.trim()) return [];
+  const codes = expandRangeCodes(codesStr);
+  if (codes.length === 0) return [];
+
+  const map: Record<string, string> = {};
+
+  // 0. Check if codesStr itself already has full text lines like `[12화학01-01] text...`
+  const inlineLines = codesStr.split("\n");
+  for (const line of inlineLines) {
+    const m = line.match(/^\s*\[([^\]]+)\]\s*(.+)$/);
+    if (m) {
+      const code = m[1].trim();
+      const text = cleanAchievementStandardText(m[2].trim());
+      if (text && text.length > 5) {
+        map[code] = text;
+      }
+    }
+  }
+
+  // 1. From uploaded HWP curriculum text if available (specific subject first)
+  if (fullText && subjects != null && subjectIdx != null && subjects[subjectIdx]) {
+    const standards = extractAchievementStandards(fullText, subjects, subjectIdx);
+    standards.forEach((s) => {
+      map[s.code] = cleanAchievementStandardText(s.text);
+    });
+  }
+
+  // 1-b. Search across entire fullText if any codes are still missing
+  if (fullText) {
+    const lines = fullText.split("\n");
+    const re = /^\s*\[([^\]]+)\]\s*(.+)$/;
+    for (const line of lines) {
+      const m = line.match(re);
+      if (m) {
+        const code = m[1].trim();
+        const text = m[2].trim();
+        if (!map[code]) {
+          map[code] = cleanAchievementStandardText(text);
+        }
+      }
+    }
+  }
+
+  // 2. Fallback to standard DB if not found in HWP
+  Object.keys(DEFAULT_STANDARDS_DB).forEach((code) => {
+    if (!map[code]) {
+      map[code] = cleanAchievementStandardText(DEFAULT_STANDARDS_DB[code]);
+    }
+  });
+
+  return codes.map((c) => ({
+    code: c,
+    text: map[c] || "",
+  }));
+}
+
 export function getExpandedStdText(
   codesStr: string,
   fullText?: string,
