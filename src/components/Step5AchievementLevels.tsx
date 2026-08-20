@@ -259,7 +259,7 @@ export const Step5AchievementLevels: React.FC<Step5AchievementLevelsProps> = ({
               type="button"
               onClick={() => fileInputRef.current?.click()}
               disabled={fileParsing}
-              className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold flex items-center gap-2 shadow-sm transition-all cursor-pointer disabled:opacity-50"
+              className="px-4 py-2.5 bg-amber-400 hover:bg-amber-500 text-slate-900 rounded-lg text-xs font-bold flex items-center gap-2 shadow-sm transition-all cursor-pointer disabled:opacity-50 border border-amber-500"
               title="성취기준별 성취수준 HWP 파일 첨부"
             >
               {fileParsing ? (
