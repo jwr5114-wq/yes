@@ -44,21 +44,31 @@ function firstDirectChild(el: Element, tag: string): Element | null {
 
 /**
  * header.xml (Contents/header.xml) holds the shared charPr (character
- * format) definitions that runs reference by id via `charPrIDRef`. Some
+ * format, referenced by runs via `charPrIDRef`) and paraPr (paragraph
+ * format, referenced by <hp:p> via `paraPrIDRef`) definitions. Some
  * templates give a placeholder cell's guide text a deliberately compressed
- * style (character ratio/장평 below 100%, negative spacing/자간) so a short
- * sample sentence visually fits one line. If we insert real (longer) text
- * into a run that still points at that compressed style, it renders
- * squeezed instead of wrapping. We never mutate a shared charPr in place
- * (other, untouched text may reference the same id) — instead we clone it,
- * normalize the clone, and repoint only the runs we actually fill.
+ * style (character ratio/장평 below 100%, non-zero spacing/자간, or a
+ * line spacing/줄간격 other than our fixed output value) so a short sample
+ * sentence visually fits one line. If we insert real (longer) text into a
+ * run/paragraph that still points at that style, it renders squeezed or at
+ * an inconsistent line height instead of wrapping cleanly at a uniform
+ * 자간 0% / 장평 100% / 줄간격 160%. We never mutate a shared charPr/paraPr
+ * in place (other, untouched text may reference the same id) — instead we
+ * clone it, normalize the clone, and repoint only the runs/paragraphs we
+ * actually fill.
  */
+const FIXED_LINE_SPACING_PERCENT = "160";
+
 interface HeaderCtx {
   doc: Document;
   charPrs: Map<string, Element>;
   normalizedCache: Map<string, string>; // original charPr id -> normalized clone id
   normalizedIds: Set<string>; // ids that are themselves already-normalized clones
   nextId: number;
+  paraPrs: Map<string, Element>;
+  normalizedParaCache: Map<string, string>; // original paraPr id -> normalized clone id
+  normalizedParaIds: Set<string>; // ids that are themselves already-normalized clones
+  nextParaId: number;
 }
 
 function loadHeaderCtx(headerXmlText: string | null): HeaderCtx | null {
@@ -66,21 +76,45 @@ function loadHeaderCtx(headerXmlText: string | null): HeaderCtx | null {
   const parser = new DOMParser();
   const doc = parser.parseFromString(headerXmlText, "application/xml");
   if (doc.getElementsByTagName("parsererror").length > 0) return null;
+
   const charPrs = new Map<string, Element>();
-  let maxId = 0;
+  let maxCharId = 0;
   for (const el of Array.from(doc.getElementsByTagNameNS("*", "charPr"))) {
     const id = el.getAttribute("id");
     if (id == null) continue;
     charPrs.set(id, el);
     const n = Number(id);
-    if (Number.isFinite(n) && n > maxId) maxId = n;
+    if (Number.isFinite(n) && n > maxCharId) maxCharId = n;
   }
-  return { doc, charPrs, normalizedCache: new Map(), normalizedIds: new Set(), nextId: maxId + 1 };
+
+  const paraPrs = new Map<string, Element>();
+  let maxParaId = 0;
+  for (const el of Array.from(doc.getElementsByTagNameNS("*", "paraPr"))) {
+    const id = el.getAttribute("id");
+    if (id == null) continue;
+    paraPrs.set(id, el);
+    const n = Number(id);
+    if (Number.isFinite(n) && n > maxParaId) maxParaId = n;
+  }
+
+  return {
+    doc,
+    charPrs,
+    normalizedCache: new Map(),
+    normalizedIds: new Set(),
+    nextId: maxCharId + 1,
+    paraPrs,
+    normalizedParaCache: new Map(),
+    normalizedParaIds: new Set(),
+    nextParaId: maxParaId + 1,
+  };
 }
 
-/** Forces character width ratio (장평) to 100% on every script variant, and
- * clears any negative spacing (자간) that would compress text. Font size
- * (height) and any non-negative spacing are left exactly as they were. */
+/** Forces character width ratio (장평) to exactly 100% and letter spacing
+ * (자간) to exactly 0% on every script variant (hangul/latin/hanja/...),
+ * regardless of what the template's own guide-text style specified. Font
+ * size (height) and every other character attribute are left exactly as
+ * they were. */
 function normalizeCharPrElement(charPr: Element) {
   for (const child of Array.from(charPr.children)) {
     if (child.localName === "ratio") {
@@ -89,8 +123,7 @@ function normalizeCharPrElement(charPr: Element) {
       }
     } else if (child.localName === "spacing") {
       for (const attr of Array.from(child.attributes)) {
-        const n = Number(attr.value);
-        if (Number.isFinite(n) && n < 0) child.setAttribute(attr.name, "0");
+        if (attr.value !== "0") child.setAttribute(attr.name, "0");
       }
     }
   }
@@ -121,11 +154,52 @@ function normalizeRunCharPr(headerCtx: HeaderCtx | null, run: Element) {
   run.setAttribute("charPrIDRef", newId);
 }
 
+/** Forces every lineSpacing (줄간격) definition inside this paraPr to a
+ * fixed 160% — searched recursively (not just direct children) because
+ * templates sometimes carry per-Hangul-version variants of paraPr fields
+ * nested inside <hp:switch>/<hp:case> branches, and every variant must
+ * agree so the paragraph renders the same regardless of which branch the
+ * viewer's HWP version resolves to. */
+function normalizeParaPrElement(paraPr: Element) {
+  for (const lineSpacing of Array.from(paraPr.getElementsByTagNameNS("*", "lineSpacing"))) {
+    lineSpacing.setAttribute("type", "PERCENT");
+    lineSpacing.setAttribute("value", FIXED_LINE_SPACING_PERCENT);
+  }
+}
+
+function normalizeParagraphParaPr(headerCtx: HeaderCtx | null, p: Element) {
+  if (!headerCtx) return;
+  const origId = p.getAttribute("paraPrIDRef");
+  if (!origId || headerCtx.normalizedParaIds.has(origId)) return;
+  let newId = headerCtx.normalizedParaCache.get(origId);
+  if (!newId) {
+    const origEl = headerCtx.paraPrs.get(origId);
+    if (!origEl || !origEl.parentNode) return;
+    const clone = origEl.cloneNode(true) as Element;
+    newId = String(headerCtx.nextParaId++);
+    clone.setAttribute("id", newId);
+    normalizeParaPrElement(clone);
+    origEl.parentNode.insertBefore(clone, origEl.nextSibling);
+    headerCtx.paraPrs.set(newId, clone);
+    headerCtx.normalizedParaCache.set(origId, newId);
+    headerCtx.normalizedParaIds.add(newId);
+    const parent = origEl.parentNode as Element;
+    const itemCnt = parent.getAttribute("itemCnt");
+    if (itemCnt != null && Number.isFinite(Number(itemCnt))) {
+      parent.setAttribute("itemCnt", String(Number(itemCnt) + 1));
+    }
+  }
+  p.setAttribute("paraPrIDRef", newId);
+}
+
 /** Removes any cached line-layout snapshot (computed for the old, shorter
  * text) and forces normal word-wrap instead of "fit to one line by
  * compressing" (lineWrap="SQUEEZE"), so HWP wraps long content across
- * multiple lines — and grows the row to fit — instead of squeezing it. */
-function normalizeParagraphFlow(p: Element) {
+ * multiple lines — and grows the row to fit — instead of squeezing it.
+ * Also repoints the paragraph at a normalized paraPr clone so its line
+ * spacing (줄간격) is always exactly 160%, regardless of what the
+ * template's own paraPr specified. */
+function normalizeParagraphFlow(p: Element, headerCtx: HeaderCtx | null = null) {
   for (const seg of directChildren(p, "linesegarray")) {
     p.removeChild(seg);
   }
@@ -133,6 +207,7 @@ function normalizeParagraphFlow(p: Element) {
   if (pPr && pPr.hasAttribute("lineWrap") && pPr.getAttribute("lineWrap") !== "BREAK") {
     pPr.setAttribute("lineWrap", "BREAK");
   }
+  normalizeParagraphParaPr(headerCtx, p);
 }
 
 function setRunText(run: Element, value: string, headerCtx: HeaderCtx | null = null) {
@@ -203,13 +278,13 @@ function forceFillCellMultiline(tc: Element, value: string, headerCtx: HeaderCtx
   if (ctrl) runs[0].removeChild(ctrl);
   for (let r = 1; r < runs.length; r++) runs[r].remove();
 
-  normalizeParagraphFlow(firstP);
+  normalizeParagraphFlow(firstP, headerCtx);
   const lines = value.split("\n");
   setRunText(runs[0], lines[0] ?? "", headerCtx);
   let anchor = firstP;
   for (let i = 1; i < lines.length; i++) {
     const clone = firstP.cloneNode(true) as Element;
-    normalizeParagraphFlow(clone);
+    normalizeParagraphFlow(clone, headerCtx);
     const cloneRuns = directChildren(clone, "run");
     if (cloneRuns.length > 0) {
       setRunText(cloneRuns[0], lines[i], headerCtx);
@@ -222,7 +297,7 @@ function forceFillCellMultiline(tc: Element, value: string, headerCtx: HeaderCtx
 }
 
 function fillParagraphValue(p: Element, value: string, headerCtx: HeaderCtx | null = null): boolean {
-  normalizeParagraphFlow(p);
+  normalizeParagraphFlow(p, headerCtx);
   return fillRunsValue(directChildren(p, "run"), value, headerCtx);
 }
 
@@ -255,7 +330,7 @@ function fillCellMultiline(tc: Element, value: string, headerCtx: HeaderCtx | nu
   let anchor = firstP;
   for (let i = 1; i < lines.length; i++) {
     const clone = firstP.cloneNode(true) as Element;
-    normalizeParagraphFlow(clone);
+    normalizeParagraphFlow(clone, headerCtx);
     for (const run of directChildren(clone, "run")) {
       const ctrl = firstDirectChild(run, "ctrl");
       if (ctrl) run.removeChild(ctrl);
@@ -342,7 +417,7 @@ function overwriteAt(ctx: FillCtx, tableId: string, col: number, row: number, va
   const subList = firstDirectChild(tc, "subList");
   const p = subList && firstDirectChild(subList, "p");
   const run = p && directChildren(p, "run")[0];
-  if (p) normalizeParagraphFlow(p);
+  if (p) normalizeParagraphFlow(p, ctx.headerCtx);
   if (run) setRunText(run, value, ctx.headerCtx);
 }
 
@@ -363,7 +438,7 @@ function fillAllFieldsByDirection(ctx: FillCtx, direction: string, value: string
       const valueRun = run.nextElementSibling;
       if (valueRun && valueRun.namespaceURI === HP_NS && valueRun.localName === "run" && !isFieldEndRun(valueRun)) {
         const hostP = closestHostParagraph(valueRun);
-        if (hostP) normalizeParagraphFlow(hostP);
+        if (hostP) normalizeParagraphFlow(hostP, ctx.headerCtx);
         setRunText(valueRun, value, ctx.headerCtx);
         count++;
       }
@@ -465,7 +540,7 @@ function fillPolicyItems(ctx: FillCtx, items: string[]) {
   }
 
   target.forEach((p, idx) => {
-    normalizeParagraphFlow(p);
+    normalizeParagraphFlow(p, ctx.headerCtx);
     const runs = directChildren(p, "run");
     const content = idx < items.length ? items[idx] : "";
     const prefix = getKoreanPrefix(idx);
@@ -661,7 +736,7 @@ export async function fillHwpxTemplate(
 
   const ctx: FillCtx = { doc, warnings: [], headerCtx };
   if (!headerCtx) {
-    ctx.warnings.push("header.xml을 찾지 못해 긴 문장의 글자 장평/자간을 정규화하지 못했습니다.");
+    ctx.warnings.push("header.xml을 찾지 못해 삽입한 글자의 자간/장평/줄간격을 정규화하지 못했습니다.");
   }
   const is1st = isFirstGrade(data.grade);
   const is3Tier = isThreeTier(data.gradeType);
