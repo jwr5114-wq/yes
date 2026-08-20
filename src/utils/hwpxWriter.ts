@@ -36,11 +36,60 @@ export interface TypographyNormalizationReport {
   paraPrCount: number;
   paraPrLineSpacingFixed: number;
   paraPrLineSpacingCreated: number;
+  sectionFilesFound: number;
+  lineSegArraysStripped: number;
+  verifiedUsedRuns: number;
+  verifiedBadRatioRuns: number;
+  verifiedBadSpacingRuns: number;
+  verifiedUsedParagraphs: number;
+  verifiedBadLineSpacingParagraphs: number;
   warnings: string[];
 }
 
 function directChildNS(el: Element, ns: string, tag: string): Element | null {
   return (Array.from(el.children).find((c) => c.namespaceURI === ns && c.localName === tag) as Element) || null;
+}
+
+function directChildrenNS(el: Element, ns: string, tag: string): Element[] {
+  return Array.from(el.children).filter((c) => c.namespaceURI === ns && c.localName === tag);
+}
+
+/**
+ * Resolves the real in-zip paths of the header/section parts via
+ * Contents/content.hpf's OPF-style manifest (<opf:item href="...">) when
+ * present, falling back to a filename-pattern scan of the zip so template
+ * variants that don't ship (or use) a manifest still work.
+ */
+async function resolvePackagePaths(zip: JSZip): Promise<{ headerPaths: string[]; sectionPaths: string[] }> {
+  const headerPaths = new Set<string>();
+  const sectionPaths = new Set<string>();
+
+  const manifestFile = zip.file("Contents/content.hpf") || zip.file("content.hpf");
+  if (manifestFile) {
+    try {
+      const manifestXml = await manifestFile.async("string");
+      const parser = new DOMParser();
+      const manifestDoc = parser.parseFromString(manifestXml, "application/xml");
+      if (manifestDoc.getElementsByTagName("parsererror").length === 0) {
+        for (const item of Array.from(manifestDoc.getElementsByTagName("*"))) {
+          if (item.localName !== "item") continue;
+          const href = item.getAttribute("href");
+          if (!href) continue;
+          if (/header\d*\.xml$/i.test(href)) headerPaths.add(href);
+          if (/section\d*\.xml$/i.test(href)) sectionPaths.add(href);
+        }
+      }
+    } catch {
+      // fall through to pattern-based discovery below
+    }
+  }
+
+  for (const name of Object.keys(zip.files)) {
+    if (/(^|\/)header\d*\.xml$/i.test(name)) headerPaths.add(name);
+    if (/(^|\/)section\d*\.xml$/i.test(name)) sectionPaths.add(name);
+  }
+
+  return { headerPaths: Array.from(headerPaths), sectionPaths: Array.from(sectionPaths) };
 }
 
 /**
@@ -92,16 +141,27 @@ export async function normalizeHwpxTypography(
     paraPrCount: 0,
     paraPrLineSpacingFixed: 0,
     paraPrLineSpacingCreated: 0,
+    sectionFilesFound: 0,
+    lineSegArraysStripped: 0,
+    verifiedUsedRuns: 0,
+    verifiedBadRatioRuns: 0,
+    verifiedBadSpacingRuns: 0,
+    verifiedUsedParagraphs: 0,
+    verifiedBadLineSpacingParagraphs: 0,
     warnings: [],
   };
 
-  const headerPaths = Object.keys(zip.files).filter((name) =>
-    /^Contents\/header\d*\.xml$/i.test(name)
-  );
+  const { headerPaths, sectionPaths } = await resolvePackagePaths(zip);
   report.headerFilesFound = headerPaths.length;
+  report.sectionFilesFound = sectionPaths.length;
 
   const parser = new DOMParser();
   const serializer = new XMLSerializer();
+
+  // charPrIDRef/paraPrIDRef -> normalized-ness, filled in while patching
+  // header.xml below and reused by the final section-wide verification pass.
+  const charPrOk = new Map<string, { ratio: boolean; spacing: boolean }>();
+  const paraPrOk = new Map<string, boolean>();
 
   for (const headerPath of headerPaths) {
     const headerFile = zip.file(headerPath);
@@ -119,6 +179,8 @@ export async function normalizeHwpxTypography(
 
     for (const charPr of charPrs) {
       report.charPrCount++;
+      const id = charPr.getAttribute("id") || "";
+      const entry = charPrOk.get(id) || { ratio: false, spacing: false };
 
       let ratio = directChildNS(charPr, HH_NS, "ratio");
       if (ratio) {
@@ -126,14 +188,16 @@ export async function normalizeHwpxTypography(
           ratio.setAttribute(attr.name, "100");
         }
         report.charPrRatioFixed++;
+        entry.ratio = true;
       } else if (ratioAttrNames) {
         ratio = headerDoc.createElementNS(HH_NS, "hh:ratio");
         for (const name of ratioAttrNames) ratio.setAttribute(name, "100");
         const fontRef = directChildNS(charPr, HH_NS, "fontRef");
         charPr.insertBefore(ratio, fontRef ? fontRef.nextSibling : charPr.firstChild);
         report.charPrRatioCreated++;
+        entry.ratio = true;
       } else {
-        report.warnings.push(`charPr id=${charPr.getAttribute("id")}: <hh:ratio> 정의를 찾을 수 없어 장평 정규화를 건너뛰었습니다.`);
+        report.warnings.push(`charPr id=${id}: <hh:ratio> 정의를 찾을 수 없어 장평 정규화를 건너뛰었습니다.`);
       }
 
       let spacing = directChildNS(charPr, HH_NS, "spacing");
@@ -142,25 +206,31 @@ export async function normalizeHwpxTypography(
           spacing.setAttribute(attr.name, "0");
         }
         report.charPrSpacingFixed++;
+        entry.spacing = true;
       } else if (spacingAttrNames) {
         spacing = headerDoc.createElementNS(HH_NS, "hh:spacing");
         for (const name of spacingAttrNames) spacing.setAttribute(name, "0");
         charPr.insertBefore(spacing, ratio ? ratio.nextSibling : charPr.firstChild);
         report.charPrSpacingCreated++;
+        entry.spacing = true;
       } else {
-        report.warnings.push(`charPr id=${charPr.getAttribute("id")}: <hh:spacing> 정의를 찾을 수 없어 자간 정규화를 건너뛰었습니다.`);
+        report.warnings.push(`charPr id=${id}: <hh:spacing> 정의를 찾을 수 없어 자간 정규화를 건너뛰었습니다.`);
       }
+
+      charPrOk.set(id, entry);
     }
 
     const paraPrs = Array.from(headerDoc.getElementsByTagNameNS(HH_NS, "paraPr"));
     for (const paraPr of paraPrs) {
       report.paraPrCount++;
+      const id = paraPr.getAttribute("id") || "";
 
       const lineSpacing = directChildNS(paraPr, HH_NS, "lineSpacing");
       if (lineSpacing) {
         lineSpacing.setAttribute("type", "PERCENT");
         lineSpacing.setAttribute("value", "160");
         report.paraPrLineSpacingFixed++;
+        paraPrOk.set(id, true);
       } else {
         const newLineSpacing = headerDoc.createElementNS(HH_NS, "hh:lineSpacing");
         newLineSpacing.setAttribute("type", "PERCENT");
@@ -175,11 +245,91 @@ export async function normalizeHwpxTypography(
           paraPr.appendChild(newLineSpacing);
         }
         report.paraPrLineSpacingCreated++;
+        paraPrOk.set(id, true);
       }
     }
 
     const newHeaderXml = serializer.serializeToString(headerDoc);
     zip.file(headerPath, newHeaderXml, { compression: "DEFLATE" });
+  }
+
+  // Strip cached line-layout metrics (<hp:linesegarray>/<hp:lineseg>) from
+  // every paragraph in every section file. HWPX readers can cache computed
+  // line height/spacing pixel metrics from when the template was last saved
+  // in Hangul; if left in place, a viewer may keep showing that stale cached
+  // layout instead of recomputing it from the now-160% paraPr on open. This
+  // forces Hangul to lay the paragraph out fresh from the (now normalized)
+  // paraPr every time, regardless of section/table nesting.
+  for (const sectionPath of sectionPaths) {
+    const sectionFile = zip.file(sectionPath);
+    if (!sectionFile) continue;
+    const sectionXmlText = await sectionFile.async("string");
+    const sectionDoc = parser.parseFromString(sectionXmlText, "application/xml");
+    if (sectionDoc.getElementsByTagName("parsererror").length > 0) {
+      report.warnings.push(`${sectionPath} 파싱에 실패해 캐시된 줄 배치 정보 제거를 건너뛰었습니다.`);
+      continue;
+    }
+
+    let changed = false;
+    for (const p of Array.from(sectionDoc.getElementsByTagNameNS(HP_NS, "p"))) {
+      for (const lineSegArray of directChildrenNS(p, HP_NS, "linesegarray")) {
+        p.removeChild(lineSegArray);
+        report.lineSegArraysStripped++;
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      const newSectionXml = serializer.serializeToString(sectionDoc);
+      zip.file(sectionPath, newSectionXml, { compression: "DEFLATE" });
+    }
+  }
+
+  // Final self-check: re-read what was actually written and confirm every
+  // *used* run/paragraph anywhere in any section file (body text, table
+  // cells, cloned rubric/weekly rows alike) now resolves — via its real
+  // charPrIDRef/paraPrIDRef — to a normalized definition. Any leftover
+  // mismatch is surfaced as a warning so it's visible in the export result
+  // instead of silently assumed to have worked.
+  for (const sectionPath of sectionPaths) {
+    const sectionFile = zip.file(sectionPath);
+    if (!sectionFile) continue;
+    const sectionXmlText = await sectionFile.async("string");
+    const sectionDoc = parser.parseFromString(sectionXmlText, "application/xml");
+    if (sectionDoc.getElementsByTagName("parsererror").length > 0) continue;
+
+    for (const run of Array.from(sectionDoc.getElementsByTagNameNS(HP_NS, "run"))) {
+      const t = directChildNS(run, HP_NS, "t");
+      const text = t ? (t.textContent || "").trim() : "";
+      if (!text) continue;
+      report.verifiedUsedRuns++;
+      const ref = run.getAttribute("charPrIDRef") || "";
+      const ok = charPrOk.get(ref);
+      if (!ok || !ok.ratio) report.verifiedBadRatioRuns++;
+      if (!ok || !ok.spacing) report.verifiedBadSpacingRuns++;
+    }
+
+    for (const p of Array.from(sectionDoc.getElementsByTagNameNS(HP_NS, "p"))) {
+      const hasText = directChildrenNS(p, HP_NS, "run").some((run) => {
+        const t = directChildNS(run, HP_NS, "t");
+        return !!t && !!(t.textContent || "").trim();
+      });
+      if (!hasText) continue;
+      report.verifiedUsedParagraphs++;
+      const ref = p.getAttribute("paraPrIDRef") || "";
+      if (!paraPrOk.get(ref)) report.verifiedBadLineSpacingParagraphs++;
+    }
+  }
+
+  if (report.verifiedBadRatioRuns > 0 || report.verifiedBadSpacingRuns > 0) {
+    report.warnings.push(
+      `⚠️ 정규화 후에도 자간/장평이 정상화되지 않은 텍스트 run이 남아 있습니다 (자간 문제 ${report.verifiedBadSpacingRuns}개, 장평 문제 ${report.verifiedBadRatioRuns}개 / 전체 사용 run ${report.verifiedUsedRuns}개).`
+    );
+  }
+  if (report.verifiedBadLineSpacingParagraphs > 0) {
+    report.warnings.push(
+      `⚠️ 정규화 후에도 줄간격이 160%가 아닌 문단이 남아 있습니다 (${report.verifiedBadLineSpacingParagraphs}개 / 전체 사용 문단 ${report.verifiedUsedParagraphs}개).`
+    );
   }
 
   return report;
