@@ -565,15 +565,8 @@ export default function App() {
       <Header
         currentProjectName={currentProjectName}
         saveState={saveState}
-        onOpenProjects={() => setIsProjectsModalOpen(true)}
-        onOpenVersions={() => setIsVersionsModalOpen(true)}
-        onManualSave={handleManualSave}
         onLoadSample={handleLoadSampleChemistry}
-        onDownloadPdf={handleDownloadPdf}
-        onOpenJsonExport={() => setIsJsonModalOpen(true)}
         onOpenHwpxExport={() => setIsHwpxModalOpen(true)}
-        onGoToHwpStep={() => setCurrentStep(5)}
-        isDownloadingPdf={isDownloadingPdf}
       />
 
       {/* Main Split Container: Left 50% Wizard, Right 50% A4 Preview */}
