@@ -18,11 +18,171 @@ import { getKoreanPrefix } from "../constants";
  */
 
 const HP_NS = "http://www.hancom.co.kr/hwpml/2011/paragraph";
+const HH_NS = "http://www.hancom.co.kr/hwpml/2011/head";
 
 export interface HwpxFillResult {
   blob: Blob;
   filename: string;
   warnings: string[];
+}
+
+export interface TypographyNormalizationReport {
+  headerFilesFound: number;
+  charPrCount: number;
+  charPrRatioFixed: number;
+  charPrRatioCreated: number;
+  charPrSpacingFixed: number;
+  charPrSpacingCreated: number;
+  paraPrCount: number;
+  paraPrLineSpacingFixed: number;
+  paraPrLineSpacingCreated: number;
+  warnings: string[];
+}
+
+function directChildNS(el: Element, ns: string, tag: string): Element | null {
+  return (Array.from(el.children).find((c) => c.namespaceURI === ns && c.localName === tag) as Element) || null;
+}
+
+/**
+ * Learns the exact attribute-name set this document's own charPr entries use
+ * for a given child tag (e.g. "ratio"/"spacing": hangul/latin/hanja/...), by
+ * scanning sibling definitions that already have one. Never invents a name
+ * that isn't already used elsewhere in the same header.xml.
+ */
+function learnAttributeNames(charPrs: Element[], tag: string): string[] | null {
+  for (const cp of charPrs) {
+    const el = directChildNS(cp, HH_NS, tag);
+    if (el && el.attributes.length > 0) {
+      return Array.from(el.attributes).map((a) => a.name);
+    }
+  }
+  return null;
+}
+
+/**
+ * HWPX TYPOGRAPHY NORMALIZATION
+ *
+ * HWPX runs/paragraphs never carry ratio(장평)/spacing(자간)/lineSpacing(줄간격)
+ * inline — they only hold a charPrIDRef / paraPrIDRef pointing at a shared
+ * <hh:charPr>/<hh:paraPr> definition inside Contents/header.xml. So the only
+ * way to guarantee every used run/paragraph renders as 자간 0 / 장평 100 /
+ * 줄간격 160 in Hangul is to normalize those *definitions* in place (Option A
+ * from spec) — every charPrIDRef/paraPrIDRef in section*.xml, including ones
+ * on template rows that get cloned for rubric/weekly-plan rows, already
+ * resolves to an id defined in header.xml, so patching the definitions once
+ * here covers all of them without having to trace individual references.
+ *
+ * All other attributes on charPr/paraPr (font, size, bold, color, align,
+ * indent, border, etc.) are left completely untouched. If a definition is
+ * missing its <hh:ratio>/<hh:spacing>/<hh:lineSpacing> child outright (not
+ * seen in real Hancom-authored files, but handled defensively), one is
+ * created using the exact attribute names already used by sibling
+ * definitions in the same file (never invented).
+ */
+export async function normalizeHwpxTypography(
+  zip: JSZip
+): Promise<TypographyNormalizationReport> {
+  const report: TypographyNormalizationReport = {
+    headerFilesFound: 0,
+    charPrCount: 0,
+    charPrRatioFixed: 0,
+    charPrRatioCreated: 0,
+    charPrSpacingFixed: 0,
+    charPrSpacingCreated: 0,
+    paraPrCount: 0,
+    paraPrLineSpacingFixed: 0,
+    paraPrLineSpacingCreated: 0,
+    warnings: [],
+  };
+
+  const headerPaths = Object.keys(zip.files).filter((name) =>
+    /^Contents\/header\d*\.xml$/i.test(name)
+  );
+  report.headerFilesFound = headerPaths.length;
+
+  const parser = new DOMParser();
+  const serializer = new XMLSerializer();
+
+  for (const headerPath of headerPaths) {
+    const headerFile = zip.file(headerPath);
+    if (!headerFile) continue;
+    const headerXmlText = await headerFile.async("string");
+    const headerDoc = parser.parseFromString(headerXmlText, "application/xml");
+    if (headerDoc.getElementsByTagName("parsererror").length > 0) {
+      report.warnings.push(`${headerPath} 파싱에 실패해 정규화를 건너뛰었습니다.`);
+      continue;
+    }
+
+    const charPrs = Array.from(headerDoc.getElementsByTagNameNS(HH_NS, "charPr"));
+    const ratioAttrNames = learnAttributeNames(charPrs, "ratio");
+    const spacingAttrNames = learnAttributeNames(charPrs, "spacing");
+
+    for (const charPr of charPrs) {
+      report.charPrCount++;
+
+      let ratio = directChildNS(charPr, HH_NS, "ratio");
+      if (ratio) {
+        for (const attr of Array.from(ratio.attributes)) {
+          ratio.setAttribute(attr.name, "100");
+        }
+        report.charPrRatioFixed++;
+      } else if (ratioAttrNames) {
+        ratio = headerDoc.createElementNS(HH_NS, "hh:ratio");
+        for (const name of ratioAttrNames) ratio.setAttribute(name, "100");
+        const fontRef = directChildNS(charPr, HH_NS, "fontRef");
+        charPr.insertBefore(ratio, fontRef ? fontRef.nextSibling : charPr.firstChild);
+        report.charPrRatioCreated++;
+      } else {
+        report.warnings.push(`charPr id=${charPr.getAttribute("id")}: <hh:ratio> 정의를 찾을 수 없어 장평 정규화를 건너뛰었습니다.`);
+      }
+
+      let spacing = directChildNS(charPr, HH_NS, "spacing");
+      if (spacing) {
+        for (const attr of Array.from(spacing.attributes)) {
+          spacing.setAttribute(attr.name, "0");
+        }
+        report.charPrSpacingFixed++;
+      } else if (spacingAttrNames) {
+        spacing = headerDoc.createElementNS(HH_NS, "hh:spacing");
+        for (const name of spacingAttrNames) spacing.setAttribute(name, "0");
+        charPr.insertBefore(spacing, ratio ? ratio.nextSibling : charPr.firstChild);
+        report.charPrSpacingCreated++;
+      } else {
+        report.warnings.push(`charPr id=${charPr.getAttribute("id")}: <hh:spacing> 정의를 찾을 수 없어 자간 정규화를 건너뛰었습니다.`);
+      }
+    }
+
+    const paraPrs = Array.from(headerDoc.getElementsByTagNameNS(HH_NS, "paraPr"));
+    for (const paraPr of paraPrs) {
+      report.paraPrCount++;
+
+      const lineSpacing = directChildNS(paraPr, HH_NS, "lineSpacing");
+      if (lineSpacing) {
+        lineSpacing.setAttribute("type", "PERCENT");
+        lineSpacing.setAttribute("value", "160");
+        report.paraPrLineSpacingFixed++;
+      } else {
+        const newLineSpacing = headerDoc.createElementNS(HH_NS, "hh:lineSpacing");
+        newLineSpacing.setAttribute("type", "PERCENT");
+        newLineSpacing.setAttribute("value", "160");
+        const margin = directChildNS(paraPr, HH_NS, "margin");
+        const border = directChildNS(paraPr, HH_NS, "border");
+        if (margin) {
+          paraPr.insertBefore(newLineSpacing, margin.nextSibling);
+        } else if (border) {
+          paraPr.insertBefore(newLineSpacing, border);
+        } else {
+          paraPr.appendChild(newLineSpacing);
+        }
+        report.paraPrLineSpacingCreated++;
+      }
+    }
+
+    const newHeaderXml = serializer.serializeToString(headerDoc);
+    zip.file(headerPath, newHeaderXml, { compression: "DEFLATE" });
+  }
+
+  return report;
 }
 
 function q(el: Element, tag: string): Element[] {
@@ -784,6 +944,15 @@ export async function fillHwpxTemplate(
   const serializer = new XMLSerializer();
   const newXml = serializer.serializeToString(doc);
   zip.file("Contents/section0.xml", newXml, { compression: "DEFLATE" });
+
+  // ★ 전체 HWPX 글자/문단 속성 정규화 (모든 내용 작성이 끝난 뒤, ZIP 생성 직전 단 한 번)
+  const typographyReport = await normalizeHwpxTypography(zip);
+  if (typographyReport.headerFilesFound === 0) {
+    ctx.warnings.push(
+      "HWPX 헤더 스타일 정의 파일(header.xml)을 찾지 못해 자간/장평/줄간격 정규화를 적용하지 못했습니다."
+    );
+  }
+  ctx.warnings.push(...typographyReport.warnings);
 
   const outBlob = await zip.generateAsync({
     type: "blob",
