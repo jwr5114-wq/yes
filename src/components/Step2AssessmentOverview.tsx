@@ -53,7 +53,7 @@ export const Step2AssessmentOverview: React.FC<Step2AssessmentOverviewProps> = (
             정기시험 (지필평가)
           </h3>
           <div className="flex items-center gap-3 flex-wrap">
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1.5 p-1.5 bg-yellow-50 border border-yellow-300 rounded-lg">
               <span className="text-xs font-bold text-slate-700">횟수</span>
               {[0, 1, 2].map((cnt) => (
                 <button
@@ -72,7 +72,7 @@ export const Step2AssessmentOverview: React.FC<Step2AssessmentOverviewProps> = (
             </div>
             <div className="flex items-center gap-1.5">
               <span className="text-xs font-bold text-slate-700">총 반영비율</span>
-              <div className="flex items-center border border-slate-300 rounded-md bg-white px-2 shadow-sm focus-within:ring-2 focus-within:ring-blue-500">
+              <div className="flex items-center border border-yellow-300 rounded-md bg-yellow-100 px-2 shadow-sm focus-within:ring-2 focus-within:ring-blue-500">
                 <input
                   type="number"
                   value={data.examRatio}
@@ -102,7 +102,7 @@ export const Step2AssessmentOverview: React.FC<Step2AssessmentOverviewProps> = (
               </div>
               <div>
                 <label className="block text-[11px] font-semibold text-slate-700 mb-1">총 반영비율</label>
-                <div className="flex items-center border border-slate-300 rounded-md bg-white px-2">
+                <div className="flex items-center border border-yellow-300 rounded-md bg-yellow-100 px-2">
                   <input
                     type="number"
                     value={data.midTotalRatio}
@@ -125,7 +125,7 @@ export const Step2AssessmentOverview: React.FC<Step2AssessmentOverviewProps> = (
                     onChange((prev) => ({ ...prev, midSelectScore: parseInt(e.target.value, 10) || 0 }))
                   }
                   placeholder="점"
-                  className="w-full p-2 border rounded-md border-slate-300 focus:ring-2 focus:ring-blue-500 outline-none"
+                  className="w-full p-2 border rounded-md border-yellow-300 bg-yellow-100 focus:ring-2 focus:ring-blue-500 outline-none"
                 />
                 <div className="mt-1 flex items-center gap-1 text-[11px] text-slate-500">
                   자동 반영비율:
@@ -147,7 +147,7 @@ export const Step2AssessmentOverview: React.FC<Step2AssessmentOverviewProps> = (
                     onChange((prev) => ({ ...prev, midShortScore: parseInt(e.target.value, 10) || 0 }))
                   }
                   placeholder="점"
-                  className="w-full p-2 border rounded-md border-slate-300 focus:ring-2 focus:ring-blue-500 outline-none"
+                  className="w-full p-2 border rounded-md border-yellow-300 bg-yellow-100 focus:ring-2 focus:ring-blue-500 outline-none"
                 />
                 <div className="mt-1 flex items-center gap-1 text-[11px] text-slate-500">
                   자동 반영비율:
@@ -169,7 +169,7 @@ export const Step2AssessmentOverview: React.FC<Step2AssessmentOverviewProps> = (
                     onChange((prev) => ({ ...prev, midEssayScore: parseInt(e.target.value, 10) || 0 }))
                   }
                   placeholder="점"
-                  className="w-full p-2 border rounded-md border-slate-300 focus:ring-2 focus:ring-blue-500 outline-none"
+                  className="w-full p-2 border rounded-md border-yellow-300 bg-yellow-100 focus:ring-2 focus:ring-blue-500 outline-none"
                 />
                 <div className="mt-1 flex items-center gap-1 text-[11px] text-slate-500">
                   자동 반영비율:
@@ -207,7 +207,7 @@ export const Step2AssessmentOverview: React.FC<Step2AssessmentOverviewProps> = (
                       midTime: newDisplay || prev.midTime,
                     }));
                   }}
-                  className="flex-1 p-2 text-xs bg-white border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none font-medium text-slate-800 shadow-xs"
+                  className="flex-1 p-2 text-xs bg-yellow-100 border border-yellow-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none font-medium text-slate-800 shadow-xs"
                 />
                 <span className="text-slate-400 font-bold text-sm">~</span>
                 <input
@@ -227,7 +227,7 @@ export const Step2AssessmentOverview: React.FC<Step2AssessmentOverviewProps> = (
                       midTime: newDisplay || prev.midTime,
                     }));
                   }}
-                  className="flex-1 p-2 text-xs bg-white border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none font-medium text-slate-800 shadow-xs"
+                  className="flex-1 p-2 text-xs bg-yellow-100 border border-yellow-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none font-medium text-slate-800 shadow-xs"
                 />
               </div>
 
@@ -252,7 +252,7 @@ export const Step2AssessmentOverview: React.FC<Step2AssessmentOverviewProps> = (
                 value={formatStdCodesForDisplay(data.midStd)}
                 readOnly
                 placeholder="성취기준 선택 버튼을 눌러 지정하세요"
-                className="w-full p-2 border rounded-md border-slate-300 bg-slate-50 text-slate-600 cursor-not-allowed"
+                className="w-full p-2 border rounded-md border-yellow-300 bg-yellow-100 text-slate-700 cursor-not-allowed"
               />
             </div>
           </div>
@@ -273,7 +273,7 @@ export const Step2AssessmentOverview: React.FC<Step2AssessmentOverviewProps> = (
               </div>
               <div>
                 <label className="block text-[11px] font-semibold text-slate-700 mb-1">총 반영비율</label>
-                <div className="flex items-center border border-slate-300 rounded-md bg-white px-2">
+                <div className="flex items-center border border-yellow-300 rounded-md bg-yellow-100 px-2">
                   <input
                     type="number"
                     value={data.finalTotalRatio}
@@ -296,7 +296,7 @@ export const Step2AssessmentOverview: React.FC<Step2AssessmentOverviewProps> = (
                     onChange((prev) => ({ ...prev, finalSelectScore: parseInt(e.target.value, 10) || 0 }))
                   }
                   placeholder="점"
-                  className="w-full p-2 border rounded-md border-slate-300 focus:ring-2 focus:ring-blue-500 outline-none"
+                  className="w-full p-2 border rounded-md border-yellow-300 bg-yellow-100 focus:ring-2 focus:ring-blue-500 outline-none"
                 />
                 <div className="mt-1 flex items-center gap-1 text-[11px] text-slate-500">
                   자동 반영비율:
@@ -318,7 +318,7 @@ export const Step2AssessmentOverview: React.FC<Step2AssessmentOverviewProps> = (
                     onChange((prev) => ({ ...prev, finalShortScore: parseInt(e.target.value, 10) || 0 }))
                   }
                   placeholder="점"
-                  className="w-full p-2 border rounded-md border-slate-300 focus:ring-2 focus:ring-blue-500 outline-none"
+                  className="w-full p-2 border rounded-md border-yellow-300 bg-yellow-100 focus:ring-2 focus:ring-blue-500 outline-none"
                 />
                 <div className="mt-1 flex items-center gap-1 text-[11px] text-slate-500">
                   자동 반영비율:
@@ -340,7 +340,7 @@ export const Step2AssessmentOverview: React.FC<Step2AssessmentOverviewProps> = (
                     onChange((prev) => ({ ...prev, finalEssayScore: parseInt(e.target.value, 10) || 0 }))
                   }
                   placeholder="점"
-                  className="w-full p-2 border rounded-md border-slate-300 focus:ring-2 focus:ring-blue-500 outline-none"
+                  className="w-full p-2 border rounded-md border-yellow-300 bg-yellow-100 focus:ring-2 focus:ring-blue-500 outline-none"
                 />
                 <div className="mt-1 flex items-center gap-1 text-[11px] text-slate-500">
                   자동 반영비율:
@@ -378,7 +378,7 @@ export const Step2AssessmentOverview: React.FC<Step2AssessmentOverviewProps> = (
                       finalTime: newDisplay || prev.finalTime,
                     }));
                   }}
-                  className="flex-1 p-2 text-xs bg-white border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none font-medium text-slate-800 shadow-xs"
+                  className="flex-1 p-2 text-xs bg-yellow-100 border border-yellow-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none font-medium text-slate-800 shadow-xs"
                 />
                 <span className="text-slate-400 font-bold text-sm">~</span>
                 <input
@@ -398,7 +398,7 @@ export const Step2AssessmentOverview: React.FC<Step2AssessmentOverviewProps> = (
                       finalTime: newDisplay || prev.finalTime,
                     }));
                   }}
-                  className="flex-1 p-2 text-xs bg-white border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none font-medium text-slate-800 shadow-xs"
+                  className="flex-1 p-2 text-xs bg-yellow-100 border border-yellow-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none font-medium text-slate-800 shadow-xs"
                 />
               </div>
 
@@ -423,7 +423,7 @@ export const Step2AssessmentOverview: React.FC<Step2AssessmentOverviewProps> = (
                 value={formatStdCodesForDisplay(data.finalStd)}
                 readOnly
                 placeholder="성취기준 선택 버튼을 눌러 지정하세요"
-                className="w-full p-2 border rounded-md border-slate-300 bg-slate-50 text-slate-600 cursor-not-allowed"
+                className="w-full p-2 border rounded-md border-yellow-300 bg-yellow-100 text-slate-700 cursor-not-allowed"
               />
             </div>
           </div>
@@ -452,7 +452,7 @@ export const Step2AssessmentOverview: React.FC<Step2AssessmentOverviewProps> = (
             수행평가
           </h3>
           <div className="flex items-center gap-3 flex-wrap">
-            <div className="flex items-center gap-1.5 flex-wrap">
+            <div className="flex items-center gap-1.5 flex-wrap p-1.5 bg-yellow-50 border border-yellow-300 rounded-lg">
               <span className="text-xs font-bold text-slate-700">횟수</span>
               {[1, 2, 3, 4].map((cnt) => (
                 <button
@@ -471,7 +471,7 @@ export const Step2AssessmentOverview: React.FC<Step2AssessmentOverviewProps> = (
             </div>
             <div className="flex items-center gap-1.5">
               <span className="text-xs font-bold text-slate-700">총 반영비율</span>
-              <div className="flex items-center border border-slate-300 rounded-md bg-white px-2 shadow-sm focus-within:ring-2 focus-within:ring-emerald-500">
+              <div className="flex items-center border border-yellow-300 rounded-md bg-yellow-100 px-2 shadow-sm focus-within:ring-2 focus-within:ring-emerald-500">
                 <input
                   type="number"
                   value={data.performanceRatio}
@@ -536,7 +536,7 @@ export const Step2AssessmentOverview: React.FC<Step2AssessmentOverviewProps> = (
                   value={String(data[nameKey] || "")}
                   onChange={(e) => onChange((prev) => ({ ...prev, [nameKey]: e.target.value }))}
                   placeholder="영역명 (예: 분자의 입체 구조 모델링 보고서)"
-                  className="w-full p-2 border rounded-md border-slate-300 focus:ring-2 focus:ring-emerald-500 outline-none font-medium"
+                  className="w-full p-2 border rounded-md border-yellow-300 bg-yellow-100 focus:ring-2 focus:ring-emerald-500 outline-none font-medium"
                 />
               </div>
 
@@ -548,7 +548,7 @@ export const Step2AssessmentOverview: React.FC<Step2AssessmentOverviewProps> = (
                     value={String(data[methodKey] || "")}
                     onChange={(e) => onChange((prev) => ({ ...prev, [methodKey]: e.target.value }))}
                     placeholder="예: 탐구형"
-                    className="w-full p-2 border rounded-md border-slate-300 focus:ring-2 focus:ring-emerald-500 outline-none"
+                    className="w-full p-2 border rounded-md border-yellow-300 bg-yellow-100 focus:ring-2 focus:ring-emerald-500 outline-none"
                   />
                 </div>
                 <div>
@@ -559,12 +559,12 @@ export const Step2AssessmentOverview: React.FC<Step2AssessmentOverviewProps> = (
                     onChange={(e) =>
                       onChange((prev) => ({ ...prev, [scoreKey]: parseInt(e.target.value, 10) || 0 }))
                     }
-                    className="w-full p-2 border rounded-md border-slate-300 focus:ring-2 focus:ring-emerald-500 outline-none"
+                    className="w-full p-2 border rounded-md border-yellow-300 bg-yellow-100 focus:ring-2 focus:ring-emerald-500 outline-none"
                   />
                 </div>
                 <div>
                   <label className="block text-[11px] font-semibold text-slate-700 mb-1">반영비율</label>
-                  <div className="flex items-center border border-slate-300 rounded-md bg-white px-2">
+                  <div className="flex items-center border border-yellow-300 rounded-md bg-yellow-100 px-2">
                     <input
                       type="number"
                       value={Number(data[ratioKey] || 0)}
@@ -590,7 +590,7 @@ export const Step2AssessmentOverview: React.FC<Step2AssessmentOverviewProps> = (
                     type="date"
                     value={startDate}
                     onChange={(e) => handleStartDateChange(e.target.value)}
-                    className="flex-1 p-2 text-xs bg-white border border-slate-300 rounded-md focus:ring-2 focus:ring-emerald-500 outline-none font-medium text-slate-800 shadow-xs"
+                    className="flex-1 p-2 text-xs bg-yellow-100 border border-yellow-300 rounded-md focus:ring-2 focus:ring-emerald-500 outline-none font-medium text-slate-800 shadow-xs"
                   />
                   <span className="text-slate-400 font-bold text-sm">~</span>
                   <input
@@ -598,7 +598,7 @@ export const Step2AssessmentOverview: React.FC<Step2AssessmentOverviewProps> = (
                     value={endDate}
                     min={startDate || undefined}
                     onChange={(e) => handleEndDateChange(e.target.value)}
-                    className="flex-1 p-2 text-xs bg-white border border-slate-300 rounded-md focus:ring-2 focus:ring-emerald-500 outline-none font-medium text-slate-800 shadow-xs"
+                    className="flex-1 p-2 text-xs bg-yellow-100 border border-yellow-300 rounded-md focus:ring-2 focus:ring-emerald-500 outline-none font-medium text-slate-800 shadow-xs"
                   />
                 </div>
 
@@ -623,7 +623,7 @@ export const Step2AssessmentOverview: React.FC<Step2AssessmentOverviewProps> = (
                   value={formatStdCodesForDisplay(String(data[stdKey] || ""))}
                   readOnly
                   placeholder="성취기준 선택 버튼을 눌러 지정하세요"
-                  className="w-full p-2 border rounded-md border-slate-300 bg-slate-50 text-slate-600 cursor-not-allowed"
+                  className="w-full p-2 border rounded-md border-yellow-300 bg-yellow-100 text-slate-700 cursor-not-allowed"
                 />
               </div>
             </div>

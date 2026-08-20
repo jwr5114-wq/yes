@@ -253,8 +253,8 @@ export const Step5AchievementLevels: React.FC<Step5AchievementLevelsProps> = ({
             </p>
           </div>
 
-          {/* Action Buttons */}
-          <div className="flex items-center gap-2">
+          {/* Action Buttons (필수 파일 첨부) */}
+          <div className="flex items-center gap-2 p-1.5 bg-yellow-50 border border-yellow-300 rounded-xl">
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
