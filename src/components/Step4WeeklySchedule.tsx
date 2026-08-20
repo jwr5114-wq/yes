@@ -1235,9 +1235,14 @@ ${weekBlocksPrompt}
 
     try {
       const updatedSchedules = [...data.schedules];
-      
+      // Progress denominator is always the full 1~20주 plan, never just the
+      // subset that actually needs an AI call (exam weeks don't call AI but
+      // still count as a processed week).
+      const totalWeeks = updatedSchedules.length;
+
       // Separate actual exam weeks and active lesson weeks
       const activeWeeks: { idx: number; item: ScheduleItem }[] = [];
+      let completedCount = 0;
       updatedSchedules.forEach((item, idx) => {
         const actualExam = item.weekDate ? getOverlappingRegularExamForWeek(item.weekDate, data) : null;
         if (actualExam) {
@@ -1252,19 +1257,27 @@ ${weekBlocksPrompt}
             type: actualExam.label,
             std: examStd,
           };
+          completedCount++;
           return;
         }
 
         const hours = parseInt(item.hours, 10) || 0;
         if (hours > 0) {
           activeWeeks.push({ idx, item: updatedSchedules[idx] });
+        } else {
+          // No hours assigned and not an exam week: nothing to generate,
+          // but it's still a processed week for progress purposes.
+          completedCount++;
         }
       });
+
+      setBatchProgress({ current: completedCount, total: totalWeeks });
 
       if (activeWeeks.length === 0) {
         onChange((prev) => ({ ...prev, schedules: updatedSchedules }));
         showToast("정기시험 주차 외에 시수가 배정된 일반 수업 주차가 없습니다.");
         setAllLoading(false);
+        setBatchProgress(null);
         return;
       }
 
@@ -1274,9 +1287,6 @@ ${weekBlocksPrompt}
       for (let i = 0; i < activeWeeks.length; i += chunkSize) {
         chunks.push(activeWeeks.slice(i, i + chunkSize));
       }
-
-      let completedCount = 0;
-      setBatchProgress({ current: 0, total: activeWeeks.length });
 
       for (let c = 0; c < chunks.length; c++) {
         const chunk = chunks[c];
@@ -1296,7 +1306,7 @@ ${weekBlocksPrompt}
             }
           });
 
-          setBatchProgress({ current: completedCount, total: activeWeeks.length });
+          setBatchProgress({ current: completedCount, total: totalWeeks });
           // Progress state update in real-time
           onChange((prev) => ({ ...prev, schedules: [...updatedSchedules] }));
 
