@@ -42,13 +42,107 @@ function firstDirectChild(el: Element, tag: string): Element | null {
   return directChildren(el, tag)[0] || null;
 }
 
-function setRunText(run: Element, value: string) {
+/**
+ * header.xml (Contents/header.xml) holds the shared charPr (character
+ * format) definitions that runs reference by id via `charPrIDRef`. Some
+ * templates give a placeholder cell's guide text a deliberately compressed
+ * style (character ratio/장평 below 100%, negative spacing/자간) so a short
+ * sample sentence visually fits one line. If we insert real (longer) text
+ * into a run that still points at that compressed style, it renders
+ * squeezed instead of wrapping. We never mutate a shared charPr in place
+ * (other, untouched text may reference the same id) — instead we clone it,
+ * normalize the clone, and repoint only the runs we actually fill.
+ */
+interface HeaderCtx {
+  doc: Document;
+  charPrs: Map<string, Element>;
+  normalizedCache: Map<string, string>; // original charPr id -> normalized clone id
+  normalizedIds: Set<string>; // ids that are themselves already-normalized clones
+  nextId: number;
+}
+
+function loadHeaderCtx(headerXmlText: string | null): HeaderCtx | null {
+  if (!headerXmlText) return null;
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(headerXmlText, "application/xml");
+  if (doc.getElementsByTagName("parsererror").length > 0) return null;
+  const charPrs = new Map<string, Element>();
+  let maxId = 0;
+  for (const el of Array.from(doc.getElementsByTagNameNS("*", "charPr"))) {
+    const id = el.getAttribute("id");
+    if (id == null) continue;
+    charPrs.set(id, el);
+    const n = Number(id);
+    if (Number.isFinite(n) && n > maxId) maxId = n;
+  }
+  return { doc, charPrs, normalizedCache: new Map(), normalizedIds: new Set(), nextId: maxId + 1 };
+}
+
+/** Forces character width ratio (장평) to 100% on every script variant, and
+ * clears any negative spacing (자간) that would compress text. Font size
+ * (height) and any non-negative spacing are left exactly as they were. */
+function normalizeCharPrElement(charPr: Element) {
+  for (const child of Array.from(charPr.children)) {
+    if (child.localName === "ratio") {
+      for (const attr of Array.from(child.attributes)) {
+        if (attr.value !== "100") child.setAttribute(attr.name, "100");
+      }
+    } else if (child.localName === "spacing") {
+      for (const attr of Array.from(child.attributes)) {
+        const n = Number(attr.value);
+        if (Number.isFinite(n) && n < 0) child.setAttribute(attr.name, "0");
+      }
+    }
+  }
+}
+
+function normalizeRunCharPr(headerCtx: HeaderCtx | null, run: Element) {
+  if (!headerCtx) return;
+  const origId = run.getAttribute("charPrIDRef");
+  if (!origId || headerCtx.normalizedIds.has(origId)) return;
+  let newId = headerCtx.normalizedCache.get(origId);
+  if (!newId) {
+    const origEl = headerCtx.charPrs.get(origId);
+    if (!origEl || !origEl.parentNode) return;
+    const clone = origEl.cloneNode(true) as Element;
+    newId = String(headerCtx.nextId++);
+    clone.setAttribute("id", newId);
+    normalizeCharPrElement(clone);
+    origEl.parentNode.insertBefore(clone, origEl.nextSibling);
+    headerCtx.charPrs.set(newId, clone);
+    headerCtx.normalizedCache.set(origId, newId);
+    headerCtx.normalizedIds.add(newId);
+    const parent = origEl.parentNode as Element;
+    const itemCnt = parent.getAttribute("itemCnt");
+    if (itemCnt != null && Number.isFinite(Number(itemCnt))) {
+      parent.setAttribute("itemCnt", String(Number(itemCnt) + 1));
+    }
+  }
+  run.setAttribute("charPrIDRef", newId);
+}
+
+/** Removes any cached line-layout snapshot (computed for the old, shorter
+ * text) and forces normal word-wrap instead of "fit to one line by
+ * compressing" (lineWrap="SQUEEZE"), so HWP wraps long content across
+ * multiple lines — and grows the row to fit — instead of squeezing it. */
+function normalizeParagraphFlow(p: Element) {
+  for (const seg of directChildren(p, "linesegarray")) {
+    p.removeChild(seg);
+  }
+  const pPr = firstDirectChild(p, "pPr");
+  if (pPr && pPr.hasAttribute("lineWrap") && pPr.getAttribute("lineWrap") !== "BREAK") {
+    pPr.setAttribute("lineWrap", "BREAK");
+  }
+}
+
+function setRunText(run: Element, value: string, headerCtx: HeaderCtx | null = null) {
   let t = firstDirectChild(run, "t");
   if (!t) {
     t = run.ownerDocument.createElementNS(HP_NS, "hp:t");
     run.appendChild(t);
   }
   t.textContent = value;
+  normalizeRunCharPr(headerCtx, run);
 }
 
 function isFieldBeginRun(run: Element): boolean {
@@ -67,12 +161,12 @@ function isFieldEndRun(run: Element): boolean {
  * CLICK_HERE field's visible value run, or fill the first genuinely-empty
  * run (<hp:run/> with no <hp:t>). Never touches a run that already carries
  * real static text outside of those two patterns. */
-function fillRunsValue(runs: Element[], value: string): boolean {
+function fillRunsValue(runs: Element[], value: string, headerCtx: HeaderCtx | null = null): boolean {
   for (let i = 0; i < runs.length; i++) {
     if (isFieldBeginRun(runs[i])) {
       const valueRun = runs[i + 1];
       if (valueRun && !isFieldEndRun(valueRun)) {
-        setRunText(valueRun, value);
+        setRunText(valueRun, value, headerCtx);
         return true;
       }
     }
@@ -82,7 +176,7 @@ function fillRunsValue(runs: Element[], value: string): boolean {
     const t = firstDirectChild(run, "t");
     const isBlank = !t || !(t.textContent || "").trim();
     if (!hasCtrl && isBlank) {
-      setRunText(run, value);
+      setRunText(run, value, headerCtx);
       return true;
     }
   }
@@ -95,7 +189,7 @@ function fillRunsValue(runs: Element[], value: string): boolean {
  * explicitly-identified set of cells whose whole purpose IS the data we
  * insert even though the template ships them pre-filled with sample/
  * instructional text (e.g. "수행 과제 흐름", "AI 활용" guidance notes). */
-function forceFillCellMultiline(tc: Element, value: string): boolean {
+function forceFillCellMultiline(tc: Element, value: string, headerCtx: HeaderCtx | null = null): boolean {
   const subList = firstDirectChild(tc, "subList");
   if (!subList) return false;
   const paras = directChildren(subList, "p");
@@ -109,14 +203,16 @@ function forceFillCellMultiline(tc: Element, value: string): boolean {
   if (ctrl) runs[0].removeChild(ctrl);
   for (let r = 1; r < runs.length; r++) runs[r].remove();
 
+  normalizeParagraphFlow(firstP);
   const lines = value.split("\n");
-  setRunText(runs[0], lines[0] ?? "");
+  setRunText(runs[0], lines[0] ?? "", headerCtx);
   let anchor = firstP;
   for (let i = 1; i < lines.length; i++) {
     const clone = firstP.cloneNode(true) as Element;
+    normalizeParagraphFlow(clone);
     const cloneRuns = directChildren(clone, "run");
     if (cloneRuns.length > 0) {
-      setRunText(cloneRuns[0], lines[i]);
+      setRunText(cloneRuns[0], lines[i], headerCtx);
       for (let r = 1; r < cloneRuns.length; r++) cloneRuns[r].remove();
     }
     anchor.parentNode!.insertBefore(clone, anchor.nextSibling);
@@ -125,42 +221,48 @@ function forceFillCellMultiline(tc: Element, value: string): boolean {
   return true;
 }
 
-function fillParagraphValue(p: Element, value: string): boolean {
-  return fillRunsValue(directChildren(p, "run"), value);
+function fillParagraphValue(p: Element, value: string, headerCtx: HeaderCtx | null = null): boolean {
+  normalizeParagraphFlow(p);
+  return fillRunsValue(directChildren(p, "run"), value, headerCtx);
 }
 
-function fillCellFirstParagraph(tc: Element, value: string): boolean {
+function fillCellFirstParagraph(tc: Element, value: string, headerCtx: HeaderCtx | null = null): boolean {
   const subList = firstDirectChild(tc, "subList");
   if (!subList) return false;
   const p = firstDirectChild(subList, "p");
   if (!p) return false;
-  return fillParagraphValue(p, value);
+  return fillParagraphValue(p, value, headerCtx);
 }
 
 /** Fills a cell that may need multiple lines: reuses the cell's first
  * paragraph for line 1, clones it (preserving paraPr/run formatting) for
  * each additional line. Table row/col count is never touched — only the
- * paragraph list *inside one cell* grows, which HWP handles natively. */
-function fillCellMultiline(tc: Element, value: string): boolean {
+ * paragraph list *inside one cell* grows, which HWP handles natively.
+ * Every paragraph we touch (first line and clones) has its cached line
+ * layout dropped and word-wrap forced on, and every run we write into has
+ * its character width/spacing normalized — so long content wraps across
+ * rows at normal character size instead of being squeezed onto one line. */
+function fillCellMultiline(tc: Element, value: string, headerCtx: HeaderCtx | null = null): boolean {
   const lines = value.split("\n");
   const subList = firstDirectChild(tc, "subList");
   if (!subList) return false;
   const firstP = firstDirectChild(subList, "p");
   if (!firstP) return false;
 
-  const ok = fillCellFirstParagraph(tc, lines[0] ?? "");
+  const ok = fillCellFirstParagraph(tc, lines[0] ?? "", headerCtx);
   if (!ok) return false;
 
   let anchor = firstP;
   for (let i = 1; i < lines.length; i++) {
     const clone = firstP.cloneNode(true) as Element;
+    normalizeParagraphFlow(clone);
     for (const run of directChildren(clone, "run")) {
       const ctrl = firstDirectChild(run, "ctrl");
       if (ctrl) run.removeChild(ctrl);
     }
     const runs = directChildren(clone, "run");
     if (runs.length > 0) {
-      setRunText(runs[0], lines[i]);
+      setRunText(runs[0], lines[i], headerCtx);
       for (let r = 1; r < runs.length; r++) runs[r].remove();
     }
     anchor.parentNode!.insertBefore(clone, anchor.nextSibling);
@@ -190,6 +292,7 @@ function findCell(tbl: Element, col: number, row: number): Element | null {
 interface FillCtx {
   doc: Document;
   warnings: string[];
+  headerCtx: HeaderCtx | null;
 }
 
 function fillAt(ctx: FillCtx, tableId: string, col: number, row: number, value: string, multiline = false) {
@@ -203,7 +306,7 @@ function fillAt(ctx: FillCtx, tableId: string, col: number, row: number, value: 
     ctx.warnings.push(`표(id=${tableId})의 셀(${col},${row})을 찾지 못했습니다.`);
     return;
   }
-  const ok = multiline ? fillCellMultiline(tc, value) : fillCellFirstParagraph(tc, value);
+  const ok = multiline ? fillCellMultiline(tc, value, ctx.headerCtx) : fillCellFirstParagraph(tc, value, ctx.headerCtx);
   if (!ok) {
     ctx.warnings.push(`표(id=${tableId})의 셀(${col},${row})은 채울 수 없는 형식이라 건너뛰었습니다.`);
   }
@@ -226,7 +329,7 @@ function forceFillAt(ctx: FillCtx, tableId: string, col: number, row: number, va
     ctx.warnings.push(`표(id=${tableId})의 셀(${col},${row})을 찾지 못했습니다.`);
     return;
   }
-  if (!forceFillCellMultiline(tc, value)) {
+  if (!forceFillCellMultiline(tc, value, ctx.headerCtx)) {
     ctx.warnings.push(`표(id=${tableId})의 셀(${col},${row})을 덮어쓰지 못했습니다.`);
   }
 }
@@ -239,7 +342,8 @@ function overwriteAt(ctx: FillCtx, tableId: string, col: number, row: number, va
   const subList = firstDirectChild(tc, "subList");
   const p = subList && firstDirectChild(subList, "p");
   const run = p && directChildren(p, "run")[0];
-  if (run) setRunText(run, value);
+  if (p) normalizeParagraphFlow(p);
+  if (run) setRunText(run, value, ctx.headerCtx);
 }
 
 /** Fills every CLICK_HERE field in the whole document whose Direction hint
@@ -258,7 +362,9 @@ function fillAllFieldsByDirection(ctx: FillCtx, direction: string, value: string
     if (dirParam && dirParam.textContent === direction) {
       const valueRun = run.nextElementSibling;
       if (valueRun && valueRun.namespaceURI === HP_NS && valueRun.localName === "run" && !isFieldEndRun(valueRun)) {
-        setRunText(valueRun, value);
+        const hostP = closestHostParagraph(valueRun);
+        if (hostP) normalizeParagraphFlow(hostP);
+        setRunText(valueRun, value, ctx.headerCtx);
         count++;
       }
     }
@@ -359,12 +465,13 @@ function fillPolicyItems(ctx: FillCtx, items: string[]) {
   }
 
   target.forEach((p, idx) => {
+    normalizeParagraphFlow(p);
     const runs = directChildren(p, "run");
     const content = idx < items.length ? items[idx] : "";
     const prefix = getKoreanPrefix(idx);
     const text = `  ${prefix}. ${content}`;
     if (runs.length > 0) {
-      setRunText(runs[0], text);
+      setRunText(runs[0], text, ctx.headerCtx);
       for (let r = 1; r < runs.length; r++) runs[r].remove();
     }
   });
@@ -427,7 +534,7 @@ function fillPerformanceBlock(
   data: PerfFieldsSource
 ) {
   if (headingP) {
-    if (!fillParagraphValue(headingP, data.name)) {
+    if (!fillParagraphValue(headingP, data.name, ctx.headerCtx)) {
       ctx.warnings.push(`"${data.name}" 수행평가 제목 필드를 채우지 못했습니다.`);
     }
   } else if (headingP === null) {
@@ -501,12 +608,13 @@ function cloneAndInsertPerformanceBlock(
       fe.setAttribute("beginIDRef", newId);
     }
   }
-  fillParagraphValue(newHeadingP, name);
+  fillParagraphValue(newHeadingP, name, ctx.headerCtx);
   // Relabel the ordinal prefix run ("나." -> "다."/"라.").
   for (const run of headingRuns) {
     const t = firstDirectChild(run, "t");
     if (t && /^\s*[가-힣]\.\s*$/.test(t.textContent || "")) {
       t.textContent = ` ${koreanPrefix}. `;
+      normalizeRunCharPr(ctx.headerCtx, run);
     }
   }
 
@@ -521,7 +629,6 @@ function cloneAndInsertPerformanceBlock(
   rubricHostP.parentNode!.insertBefore(newInfoHostP, newHeadingP.nextSibling);
   rubricHostP.parentNode!.insertBefore(newRubricHostP, newInfoHostP.nextSibling);
 
-  void ctx;
   return { infoTableId: newInfoId, rubricTableId: newRubricId };
 }
 
@@ -543,7 +650,19 @@ export async function fillHwpxTemplate(
     throw new Error("템플릿의 section0.xml을 파싱하지 못했습니다.");
   }
 
-  const ctx: FillCtx = { doc, warnings: [] };
+  // header.xml holds the shared character styles (장평/자간 등) that cell
+  // runs reference. Loading it lets us normalize a run's style without
+  // touching table/paragraph structure in section0.xml. Optional: if it's
+  // missing or fails to parse, we still fill the document, just without
+  // character-style normalization.
+  const headerFile = zip.file("Contents/header.xml");
+  const headerXmlText = headerFile ? await headerFile.async("string") : null;
+  const headerCtx = loadHeaderCtx(headerXmlText);
+
+  const ctx: FillCtx = { doc, warnings: [], headerCtx };
+  if (!headerCtx) {
+    ctx.warnings.push("header.xml을 찾지 못해 긴 문장의 글자 장평/자간을 정규화하지 못했습니다.");
+  }
   const is1st = isFirstGrade(data.grade);
   const is3Tier = isThreeTier(data.gradeType);
 
@@ -685,11 +804,15 @@ export async function fillHwpxTemplate(
 
   const serializer = new XMLSerializer();
   const newXml = serializer.serializeToString(doc);
-  // Explicit per-file DEFLATE only for the one file we rewrote; every other
+  // Explicit per-file DEFLATE only for the files we rewrote; every other
   // entry (crucially "mimetype", which the HWPX/OPC spec requires to be
   // the first entry and stored *uncompressed*) keeps JSZip's STORE default
   // below, exactly matching the original archive's own convention.
   zip.file("Contents/section0.xml", newXml, { compression: "DEFLATE" });
+  if (headerCtx && headerCtx.normalizedCache.size > 0) {
+    const newHeaderXml = serializer.serializeToString(headerCtx.doc);
+    zip.file("Contents/header.xml", newHeaderXml, { compression: "DEFLATE" });
+  }
 
   const outBlob = await zip.generateAsync({
     type: "blob",
